@@ -226,14 +226,14 @@ function AuthScreen({ onAuth }) {
     setLoading(true); setMsg("");
     if (mode === "login") {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) setMsg(error.message);
+      if (error) setMsg(error.message || "Sign in failed. Check your email and password.");
     } else {
       const { error } = await supabase.auth.signUp({
         email, password,
         options: { data: { full_name: name } }
       });
-      if (error) setMsg(error.message);
-      else setMsg("Check your email to confirm your account!");
+      if (error) setMsg(error.message || "Sign up failed. Try again or contact support.");
+      else setMsg("Account created! Signing you in...");
     }
     setLoading(false);
   }
