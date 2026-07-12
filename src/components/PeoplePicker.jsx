@@ -21,7 +21,7 @@ function Avatar({ p, selected }) {
   );
 }
 
-export default function PeoplePicker({ people, selectedIds, multi = true, memberIds = [], title = "Who's in", onToggle, onClose, onCreate }) {
+export default function PeoplePicker({ people, selectedIds, multi = true, memberIds = [], title = "Who's in", onToggle, onClose, onCreate, onEveryone, onClear, suggestions = [], onAddPeople }) {
   const [q, setQ] = useState("");
   const query = q.trim().toLowerCase();
   const match = (p) => p.display_name.toLowerCase().includes(query) || (p.is_self && "you".includes(query));
@@ -63,6 +63,35 @@ export default function PeoplePicker({ people, selectedIds, multi = true, member
           placeholder="Search or type to add"
           style={{ height: 42, padding: "0 14px", background: "var(--bg)", border: "1px solid var(--hairline)", borderRadius: 12, fontSize: 15, outline: "none", flex: "none" }}
         />
+        {multi && (onEveryone || onClear) && (
+          <div style={{ display: "flex", gap: 8, marginTop: 12, flex: "none" }}>
+            {onEveryone && (
+              <button onClick={onEveryone} style={{ height: 32, padding: "0 14px", borderRadius: 999, border: "1px solid var(--hairline)", background: "var(--bg)", fontSize: 13, fontWeight: 500 }}>Everyone</button>
+            )}
+            {onClear && (
+              <button onClick={onClear} style={{ height: 32, padding: "0 14px", borderRadius: 999, border: "1px solid var(--hairline)", background: "var(--bg)", fontSize: 13, fontWeight: 500, color: "var(--text-2)" }}>Clear</button>
+            )}
+          </div>
+        )}
+        {multi && onAddPeople && suggestions.length > 0 && (
+          <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap", flex: "none" }}>
+            {suggestions.map((s) => {
+              const done = s.ids.every((id) => selectedIds.has(id));
+              return (
+                <button
+                  key={s.label}
+                  onClick={() => onAddPeople(s.ids)}
+                  disabled={done}
+                  style={{ display: "flex", alignItems: "center", gap: 6, height: 32, padding: "0 13px", borderRadius: 999, border: "1px solid var(--hairline)", background: "var(--bg)", fontSize: 13, fontWeight: 500, opacity: done ? 0.4 : 1 }}
+                >
+                  <span style={{ color: "var(--text-3)", fontSize: 14, lineHeight: 1 }}>{done ? "✓" : "+"}</span>
+                  {s.label}
+                  <span className="mono" style={{ fontSize: 10, color: "var(--text-4)" }}>{s.ids.length}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
         <div style={{ overflowY: "auto", marginTop: 4 }}>
           {query && !exact && onCreate && (
             <button onClick={() => onCreate(q.trim())} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "14px 4px", textAlign: "left" }}>

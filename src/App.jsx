@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "./lib/supabase";
 import Home from "./screens/Home";
 import ExpenseForm from "./screens/ExpenseForm";
+import Records from "./screens/Records";
+import CreateRecording from "./screens/CreateRecording";
+import RecordingDetail from "./screens/RecordingDetail";
 
 // ─── Splash ────────────────────────────────────────────────────────────────
 function Splash() {
@@ -110,6 +113,21 @@ function Placeholder({ title }) {
   );
 }
 
+// ─── Stub sheet (for screens not built yet: expense detail, settle) ──────────
+function StubSheet({ title, onClose }) {
+  return (
+    <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "var(--scrim-sheet)", zIndex: 60, animation: "fadeIn 140ms ease" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", left: 0, right: 0, bottom: 0, background: "var(--surface)", borderTop: "1px solid var(--hairline)", borderRadius: "var(--r-sheet) var(--r-sheet) 0 0", padding: "20px 24px 28px", animation: "sheetIn 240ms var(--ease)" }}>
+        <div style={{ width: 36, height: 3, borderRadius: 2, background: "#DCD6C6", margin: "0 auto 18px" }} />
+        <div className="legend" style={{ color: "var(--text-3)" }}>stub</div>
+        <div style={{ fontSize: 18, fontWeight: 600, marginTop: 6, letterSpacing: "-0.01em" }}>{title}</div>
+        <div style={{ fontSize: 12.5, color: "var(--text-2)", marginTop: 6, lineHeight: 1.55 }}>Coming in a later build phase.</div>
+        <div onClick={onClose} style={{ height: 40, border: "1px solid var(--hairline)", borderRadius: 20, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 600, cursor: "pointer", marginTop: 20 }}>Close</div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Bottom nav ──────────────────────────────────────────────────────────────
 const TABS = [
   { id: "home", label: "home" },
@@ -143,7 +161,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("home");
   const [people, setPeople] = useState([]);
-  const [overlay, setOverlay] = useState(null);
+  const [stack, setStack] = useState([]); // overlay stack: full-screen pushed screens
+  const [stub, setStub] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -166,8 +185,9 @@ export default function App() {
   if (loading) return <Splash />;
   if (!session) return <AuthScreen />;
 
-  function closeOverlay(changed) {
-    setOverlay(null);
+  const push = (o) => setStack((s) => [...s, o]);
+  function popOverlay(changed) {
+    setStack((s) => s.slice(0, -1));
     if (changed) {
       setRefreshKey((k) => k + 1);
       loadPeople();
@@ -177,13 +197,42 @@ export default function App() {
   return (
     <div style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-        {tab === "home" && <Home people={people} refreshKey={refreshKey} onNewExpense={() => setOverlay({ type: "expense" })} />}
-        {tab === "records" && <Placeholder title="Records" />}
+        {tab === "home" && <Home people={people} refreshKey={refreshKey} onNewExpense={() => push({ type: "expense" })} />}
+        {tab === "records" && (
+          <Records
+            people={people}
+            refreshKey={refreshKey}
+            onNewRecording={() => push({ type: "createRecording" })}
+            onOpenRecording={(id) => push({ type: "recordingDetail", id })}
+            onOpenExpense={() => setStub("Expense detail")}
+          />
+        )}
         {tab === "settlement" && <Placeholder title="Settlement" />}
       </div>
       <BottomNav tab={tab} setTab={setTab} />
 
-      {overlay?.type === "expense" && <ExpenseForm people={people} onClose={closeOverlay} />}
+      {/* overlay stack — each pushed screen renders above the previous */}
+      {stack.map((o, i) => {
+        const key = `${o.type}-${i}`;
+        if (o.type === "expense") return <ExpenseForm key={key} people={people} forceRecordingId={o.recordingId || null} onClose={popOverlay} />;
+        if (o.type === "createRecording") return <CreateRecording key={key} people={people} onClose={popOverlay} />;
+        if (o.type === "recordingDetail")
+          return (
+            <RecordingDetail
+              key={key}
+              recordingId={o.id}
+              people={people}
+              refreshKey={refreshKey}
+              onAddExpense={() => push({ type: "expense", recordingId: o.id })}
+              onOpenExpense={() => setStub("Expense detail")}
+              onSettle={() => setStub("Settle up this record")}
+              onClose={() => popOverlay(false)}
+            />
+          );
+        return null;
+      })}
+
+      {stub && <StubSheet title={stub} onClose={() => setStub(null)} />}
     </div>
   );
 }

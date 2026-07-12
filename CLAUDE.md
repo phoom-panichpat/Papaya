@@ -28,15 +28,23 @@ Deeper design rationale lives in the agent memory file (`~/.claude/projects/-Use
 | 2. Auth + onboarding | ✅ minimal (inline in App.jsx) |
 | 3. Home screen | ✅ done, verified live |
 | 4. Expense form (even-split capture) | ✅ done, verified live |
-| 4b. "Split it up" carve-out engine | 🔶 ~80% — compiles, needs 2 wiring steps (see §8) |
-| 5. Records / Recording detail / Create recording | ⬜ not started |
-| 6. Settlement / Expense detail | ⬜ not started |
+| 4b. "Split it up" carve-out engine | ✅ done, verified live |
+| 5. Records / Recording detail / Create recording | ✅ done, verified live |
+| 6. Settlement / Expense detail | ⬜ not started (both stubbed) |
 | 7. Settings / Friends | ⬜ not started |
 | 8. Punch-list + deploy | ⬜ |
 
 **What works right now (verified running against live Supabase):** sign in → Home accordion feed (recordings + loose expenses, live REC toggle with switch-confirm, dot-matrix amounts) → FAB opens expense form → amount keypad, currency dropdown, foreign exchange-rate card, payer + split pickers → Save persists and Home refreshes.
 
-Two commits on `papaya-v2`: `8725d11` (foundation/Home/expense form), `c2a23f2` (cleanup + form refinements). The half-done "Split it up" work is **uncommitted** in `src/screens/ExpenseForm.jsx`.
+**"Split it up" is now complete** (verified live: total → "Split it up" → add item "Wine" ฿300 → picker with Everyone/Clear chips assigns all 5 → the rest auto-recomputes to ฿700 → per-person peek correct (You ฿760, others ฿60) → Save persists as a loose expense, Home refreshes). Two wiring steps done: `itemPicker` now renders a `PeoplePicker`; `PeoplePicker` gained `onEveryone`/`onClear` chips. Also fixed: `setTargetAll`'s "Everyone" now selects all `localPeople` (previously only recording members + self, so it selected nobody on a loose expense).
+
+**Phase 5 (Records / Recording detail / Create recording) is now complete** (verified live). New files: `src/screens/Records.jsx` (segmented Recordings|Loose control with per-view counts, search across both, "+ New recording", recording cards → detail, loose rows → expense-detail stub), `src/screens/RecordingDetail.jsx` (title + derived date range + logs/currency meta, "Who's in" party roster, ORANGE "Settle up this record" primary [stub → Phase 6] + "+ Add expense" secondary, per-expense settled indicators derived from `expense_item_members.settled_at` → "settled"/"open"/"N of M · Name open", log rows → expense-detail stub), `src/screens/CreateRecording.jsx` (name, optional "Who's in" via PeoplePicker, optional "Different currency" reveal + exchange rate, "Start recording now" toggle → clears other live recordings then inserts active; always adds self to members). **PeoplePicker has two multi-select shortcut modes** (a picker uses one, not both): (a) `onEveryone`/`onClear` chips = pare-down a known group, for the EXPENSE FORM (split/item pickers); (b) `suggestions` (`[{label, ids}]`) + `onAddPeople(ids)` chips = assemble a party from scratch, for CREATE RECORDING — it passes "From last time" (members of the most recent recording) + "Often" (people in ≥2 recordings), each a one-tap add that flips to a ✓ done state once its people are all selected. Design rationale (Phoom, 2026-07-13): Everyone/Clear is a splitting affordance and belongs only in the expense form; building a recording's roster wants recency/frequency suggestions, not "everyone". Verified: create "Chiang Mai trip" w/ Everyone → persists members + becomes the live REC session (took over from Busan, one-live enforced); add-expense from a recording detail forces that recording (chip "Recording · Seoul in June", inherits KRW, roster pre-filled) → saves → detail + Records both refresh (06→07 logs, date range extends).
+
+**App.jsx navigation was refactored from a single `overlay` to an overlay STACK** (`stack` array + `push`/`popOverlay`) so nested pushes work (recording detail → add expense → pop back refreshed). `popOverlay(changed)` bumps `refreshKey` + reloads people; underlying mounted screens re-fetch on `refreshKey`. Records/RecordingDetail hit unbuilt screens (expense detail, settle-up) via an App-level `StubSheet`. `ExpenseForm` now accepts `forceRecordingId` to file into a specific recording instead of auto-detecting the live one.
+
+Settled-indicator green uses `var(--settled, #4E7A55)` with an inline fallback — no `--settled` token defined yet; per the design note, make settled/open colors an intentional TE-palette choice in the styling/settlement pass.
+
+Commits on `papaya-v2`: `8725d11` (foundation/Home/expense form), `c2a23f2` (cleanup + form refinements). The finished "Split it up" work + all of Phase 5 are **uncommitted** (ExpenseForm.jsx, PeoplePicker.jsx, App.jsx, + 3 new screens). Dev/demo note: testing left an empty "Chiang Mai trip" recording (now the live session) and a couple of harmless test expenses in the seed DB — re-seed to reset.
 
 ---
 
@@ -108,7 +116,7 @@ Balances are **derived client-side** from items/members/settlements (no balance 
 
 ## 7. Conventions, patterns & gotchas
 
-- **Navigation:** `App.jsx` holds `tab` (home/records/settlement), `overlay` (full-screen pushed screens like ExpenseForm), and `refreshKey` (bump → child screens reload). Full-screen screens are rendered as overlays; pass `onClose(changed)` — `changed=true` bumps refreshKey + reloads people.
+- **Navigation:** `App.jsx` holds `tab` (home/records/settlement), an overlay **`stack`** (array of full-screen pushed screens — ExpenseForm, CreateRecording, RecordingDetail — rendered on top of the tab, last on top), a `stub` (App-level StubSheet for not-yet-built targets like expense-detail/settle), and `refreshKey` (bump → mounted screens reload). Push with `push(o)`; each pushed screen gets `onClose`/`popOverlay(changed)` — `changed=true` pops + bumps refreshKey + reloads people. Screens re-fetch on the `refreshKey` prop so an underlying screen refreshes when an overlay above it saves.
 - **RLS scopes queries automatically** to the owner; you never filter by `owner_id` in selects, but you MUST set `owner_id` on every insert.
 - **After creating tokens/people**, refresh the `people` list (App reloads on overlay close).
 - **Browser testing:** controls are `<div onClick>` not semantic buttons; coordinate clicks are unreliable. Drive via `javascript_tool` DOM `.click()` (e.g. find the FAB by its SVG path, click `.closest('div')`). React controlled inputs need real typing or the native value-setter + `input` event.
@@ -117,30 +125,14 @@ Balances are **derived client-side** from items/members/settlements (no balance 
 
 ---
 
-## 8. Immediate next task: finish "Split it up" (§4b)
+## 8. Immediate next task: Phase 6 — Settlement + Expense detail
 
-`src/screens/ExpenseForm.jsx` already has: `sliced` state, `restMembers`, `items` (carve-outs), `restAmount`/`balanced`/`shares` computed, the item helpers (`addItem`/`removeItem`/`updateItem`/`toggleItemMember`/`setTargetAll`/`createPersonForItem`), the sliced render (rest card + item cards + "+ Add item" + checks-out + per-person peek), and a `sliced`-aware `save()`. **It compiles.** Two pieces remain:
+Phases 4b (Split it up) and 5 (Records/Recording detail/Create recording) are **done + verified live**. Next is Phase 6, currently both STUBBED (App-level `StubSheet`, reached from Records/RecordingDetail log rows and the "Settle up this record" button):
 
-1. **Render a `PeoplePicker` for `itemPicker`.** State `itemPicker` is set to `"rest"` or an item `id` when the user taps an item's "who's in" area, but nothing renders yet. Add (next to the existing `{picker && <PeoplePicker .../>}`):
-   ```jsx
-   {itemPicker && (() => {
-     const isRest = itemPicker === "rest";
-     const cur = isRest ? restMembers : (items.find((it) => it.id === itemPicker)?.members || new Set());
-     return (
-       <PeoplePicker people={localPeople} selectedIds={cur} multi memberIds={members}
-         title={isRest ? "Who splits the rest?" : "Who's in?"}
-         onToggle={(p) => toggleItemMember(itemPicker, p)}
-         onEveryone={() => setTargetAll(itemPicker, true)}
-         onClear={() => setTargetAll(itemPicker, false)}
-         onClose={() => setItemPicker(null)} onCreate={createPersonForItem} />
-     );
-   })()}
-   ```
-2. **Add `Everyone`/`Clear` shortcut chips to `PeoplePicker`.** Accept `onEveryone` + `onClear` props; when `multi` and either is provided, render two pill chips above the people groups (Everyone → selects all, Clear → deselects all).
+- **Expense detail** (§9.6) — read-only view of one logged expense: title/amount (+ base-currency equiv if foreign), paid-by/date/recording, full split breakdown (the rest + carve-outs, who's-in + per-person amounts), per-person settled/open pills, Edit (→ ExpenseForm) + Delete (confirm cautions if settled portions exist). Reached by tapping an expense anywhere (Home log, recording-detail log, Records loose row, settlement breakdown). Derive the breakdown from `expense_items` + `expense_item_members`; the settled indicator logic already exists in `RecordingDetail.jsx` (`settled_at`-based) — reuse/extract it.
+- **Settlement** (§9.3) — global tab = **direct pairwise** settle (settle with each person you actually owe; NEVER route between people who don't share a record). Minimized "who pays who" is **scoped inside a record** and lives behind the RecordingDetail "Settle up this record" button (currently a stub). Partial settlement = **checking off breakdown items** (not typing amounts) → writes `settled_at` on `expense_item_members` + a `settlements` ledger row; deliberate commit + Undo. Balances are derived client-side from items/members/settlements. See the memory direction file for the full settlement design (item-check model, per-person outstanding, Undo snackbar, misclick protection).
 
-Then verify: FAB → enter amount → "Split it up" → add an item ("Wine", amount) → assign members → confirm "the rest" auto-recomputes, "Checks out" shows total, per-person peek is correct → Save → check it persists.
-
-**After that:** apply the build punch-list below and continue to Records → Recording detail → Create recording → Settlement → Expense detail → Settings → Friends, then deploy (Vercel). Each screen has an approved wireframe (see memory) and reuses established patterns.
+**After Phase 6:** Settings + Friends (Phase 7), then punch-list + deploy (Phase 8, Vercel). Each screen has an approved wireframe (see memory) and reuses established patterns (overlay stack, PeoplePicker, the money/legend/mono helpers).
 
 ---
 
@@ -149,8 +141,8 @@ Then verify: FAB → enter amount → "Split it up" → add an item ("Wine", amo
 1. **Home** — settings gear is present (opens a stub); wire it to a real Settings screen when built.
 2. **Expense form** — "the rest" membership editable (done in the carve-out engine); delete-item affordance (done). Verify both once §8 is finished.
 3. **Settlement** — minimization scoped within-record only; global tab = direct pairwise; never route between strangers. Minimized "settle up this record" lives on the recording-detail screen.
-4. **Recording detail** — "Settle up this record" is the ORANGE primary (add-expense secondary); per-expense settled indicators ("settled" / "2 of 3 · Mia open" / "open"); a "who's in" party roster.
-5. **Records** — segmented "Recordings | Loose" two-view control (each scrolls independently); search across both.
+4. **Recording detail** — ✅ DONE: "Settle up this record" ORANGE primary (add-expense secondary, stub → Phase 6); per-expense settled indicators ("settled" / "N of M · Name open" / "open"); "who's in" party roster.
+5. **Records** — ✅ DONE: segmented "Recordings | Loose" two-view control with counts; search across both; "+ New recording".
 6. **Expense detail** — read-only view (missing screen): title/amount (+ base equiv if foreign), paid-by/date/recording, full split breakdown, per-person settled/open pills, Edit + Delete (delete confirm cautions if settled portions exist).
 7. **Friends** — filter/segment Account vs Placeholder; person detail with claim/merge/remove.
 8. **Settings** — home currency lives here (default THB); profile; token reconciliation (merge/claim).

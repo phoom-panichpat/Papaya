@@ -35,7 +35,7 @@ function Cluster({ ids, people }) {
 
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "back"];
 
-export default function ExpenseForm({ people, onClose }) {
+export default function ExpenseForm({ people, onClose, forceRecordingId = null }) {
   const [localPeople, setLocalPeople] = useState(people);
   const [amount, setAmount] = useState("0");
   const [currency, setCurrency] = useState("THB");
@@ -66,7 +66,9 @@ export default function ExpenseForm({ people, onClose }) {
     (async () => {
       const { data: prof } = await supabase.from("profiles").select("home_currency").maybeSingle();
       if (prof?.home_currency) setHomeCurrency(prof.home_currency);
-      const { data: recs } = await supabase.from("recordings").select("*").eq("is_active", true).limit(1);
+      const { data: recs } = forceRecordingId
+        ? await supabase.from("recordings").select("*").eq("id", forceRecordingId).limit(1)
+        : await supabase.from("recordings").select("*").eq("is_active", true).limit(1);
       const rec = recs?.[0] || null;
       setRecording(rec);
       let memberIds = [];
@@ -102,7 +104,6 @@ export default function ExpenseForm({ people, onClose }) {
   const carveTotal = items.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
   const restAmount = total - carveTotal;
   const balanced = restAmount >= -0.001;
-  const everyoneIds = [...new Set([...members, ...(self ? [self.id] : []), ...restMembers])];
   const slicedValid =
     balanced &&
     (restAmount <= 0.001 || restMembers.size > 0) &&
@@ -173,7 +174,7 @@ export default function ExpenseForm({ people, onClose }) {
     }
   }
   function setTargetAll(target, on) {
-    const set = new Set(on ? everyoneIds : []);
+    const set = new Set(on ? localPeople.map((p) => p.id) : []);
     if (target === "rest") setRestMembers(set);
     else setItems((l) => l.map((it) => (it.id === target ? { ...it, members: new Set(set) } : it)));
   }
@@ -467,6 +468,26 @@ export default function ExpenseForm({ people, onClose }) {
           onCreate={createPerson}
         />
       )}
+
+      {/* item / rest people picker */}
+      {itemPicker && (() => {
+        const isRest = itemPicker === "rest";
+        const cur = isRest ? restMembers : (items.find((it) => it.id === itemPicker)?.members || new Set());
+        return (
+          <PeoplePicker
+            people={localPeople}
+            selectedIds={cur}
+            multi
+            memberIds={members}
+            title={isRest ? "Who splits the rest?" : "Who's in?"}
+            onToggle={(p) => toggleItemMember(itemPicker, p)}
+            onEveryone={() => setTargetAll(itemPicker, true)}
+            onClear={() => setTargetAll(itemPicker, false)}
+            onClose={() => setItemPicker(null)}
+            onCreate={createPersonForItem}
+          />
+        );
+      })()}
 
       {/* note */}
       {note && (
