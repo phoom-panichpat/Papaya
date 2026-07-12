@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol } from "../lib/format";
 import PeoplePicker from "../components/PeoplePicker";
@@ -53,6 +53,11 @@ export default function ExpenseForm({ people, onClose }) {
   const [saving, setSaving] = useState(false);
   const [homeCurrency, setHomeCurrency] = useState("THB");
   const [rate, setRate] = useState("");
+  const [sliced, setSliced] = useState(false);
+  const [restMembers, setRestMembers] = useState(new Set());
+  const [items, setItems] = useState([]); // carve-outs: {id, label, amount, members:Set}
+  const [itemPicker, setItemPicker] = useState(null); // "rest" | itemId
+  const idRef = useRef(0);
 
   useEffect(() => { setLocalPeople(people); }, [people]);
   const self = localPeople.find((p) => p.is_self);
@@ -93,7 +98,35 @@ export default function ExpenseForm({ people, onClose }) {
   const foreign = currency !== baseCurrency;
   const rateNum = parseFloat(rate);
   const converted = foreign && rateNum > 0 ? total * rateNum : null;
-  const canSave = total > 0 && paidBy && splitIds.size > 0 && !saving;
+
+  const carveTotal = items.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
+  const restAmount = total - carveTotal;
+  const balanced = restAmount >= -0.001;
+  const everyoneIds = [...new Set([...members, ...(self ? [self.id] : []), ...restMembers])];
+  const slicedValid =
+    balanced &&
+    (restAmount <= 0.001 || restMembers.size > 0) &&
+    items.every((it) => { const a = parseFloat(it.amount) || 0; return a <= 0 || it.members.size > 0; });
+  const canSave = total > 0 && paidBy && !saving && (sliced ? slicedValid : splitIds.size > 0);
+
+  const shares = (() => {
+    const m = {};
+    const add = (id, amt) => { m[id] = (m[id] || 0) + amt; };
+    if (sliced) {
+      if (restMembers.size && restAmount > 0) {
+        const per = restAmount / restMembers.size;
+        restMembers.forEach((id) => add(id, per));
+      }
+      items.forEach((it) => {
+        const a = parseFloat(it.amount) || 0;
+        if (it.members.size && a > 0) {
+          const per = a / it.members.size;
+          it.members.forEach((id) => add(id, per));
+        }
+      });
+    }
+    return m;
+  })();
 
   function toggleSplit(p) {
     setSplitIds((s) => {
@@ -113,6 +146,43 @@ export default function ExpenseForm({ people, onClose }) {
     }
   }
 
+  function enterSliced() {
+    setSliced(true);
+    setKeypadOpen(false);
+    setRestMembers(new Set(splitIds));
+  }
+  function addItem() {
+    setItems((l) => [...l, { id: ++idRef.current, label: "", amount: "", members: new Set() }]);
+  }
+  function removeItem(id) {
+    setItems((l) => l.filter((it) => it.id !== id));
+  }
+  function updateItem(id, key, val) {
+    setItems((l) => l.map((it) => (it.id === id ? { ...it, [key]: val } : it)));
+  }
+  function toggleItemMember(target, p) {
+    if (target === "rest") {
+      setRestMembers((s) => { const n = new Set(s); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n; });
+    } else {
+      setItems((l) => l.map((it) => {
+        if (it.id !== target) return it;
+        const n = new Set(it.members);
+        n.has(p.id) ? n.delete(p.id) : n.add(p.id);
+        return { ...it, members: n };
+      }));
+    }
+  }
+  function setTargetAll(target, on) {
+    const set = new Set(on ? everyoneIds : []);
+    if (target === "rest") setRestMembers(set);
+    else setItems((l) => l.map((it) => (it.id === target ? { ...it, members: new Set(set) } : it)));
+  }
+  async function createPersonForItem(name) {
+    const owner_id = self?.owner_id;
+    const { data: p } = await supabase.from("people").insert({ owner_id, display_name: name, is_token: true }).select().single();
+    if (p) { setLocalPeople((l) => [...l, p]); toggleItemMember(itemPicker, p); }
+  }
+
   async function save() {
     if (!canSave) return;
     setSaving(true);
@@ -123,14 +193,31 @@ export default function ExpenseForm({ people, onClose }) {
       .insert({ owner_id, recording_id: recording?.id || null, paid_by: paidBy, title: title.trim() || ts, total_amount: total, currency, exchange_rate: foreign && rateNum > 0 ? rateNum : null })
       .select()
       .single();
-    const { data: item } = await supabase
-      .from("expense_items")
-      .insert({ owner_id, expense_id: exp.id, label: null, amount: total, is_rest: true })
-      .select()
-      .single();
-    await supabase.from("expense_item_members").insert([...splitIds].map((pid) => ({ item_id: item.id, person_id: pid, owner_id })));
-    if (recording) {
-      const toAdd = [...splitIds].filter((id) => !members.includes(id));
+    const participants = new Set();
+    async function insertItem(label, amt, isRest, memberSet) {
+      const { data: it } = await supabase
+        .from("expense_items")
+        .insert({ owner_id, expense_id: exp.id, label, amount: amt, is_rest: isRest })
+        .select()
+        .single();
+      const ids = [...memberSet];
+      if (ids.length) await supabase.from("expense_item_members").insert(ids.map((pid) => ({ item_id: it.id, person_id: pid, owner_id })));
+      ids.forEach((id) => participants.add(id));
+    }
+
+    if (sliced) {
+      await insertItem(null, restAmount, true, restMembers);
+      for (const it of items) {
+        const a = parseFloat(it.amount) || 0;
+        if (a <= 0 || !it.members.size) continue;
+        await insertItem(it.label.trim() || null, a, false, it.members);
+      }
+    } else {
+      await insertItem(null, total, true, splitIds);
+    }
+
+    if (recording && participants.size) {
+      const toAdd = [...participants].filter((id) => !members.includes(id));
       if (toAdd.length) {
         await supabase.from("recording_members").upsert(
           toAdd.map((pid) => ({ recording_id: recording.id, person_id: pid, owner_id })),
@@ -145,6 +232,8 @@ export default function ExpenseForm({ people, onClose }) {
   const payer = localPeople.find((p) => p.id === paidBy);
   const row = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderTop: "1px solid var(--hairline)", minHeight: 56, cursor: "pointer" };
   const label = { fontSize: 15 };
+  const itemCard = { background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: 12, padding: "14px 16px", marginBottom: 10 };
+  const danger = "#B23B2E";
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "var(--bg)", zIndex: 30, display: "flex", flexDirection: "column" }}>
@@ -231,27 +320,106 @@ export default function ExpenseForm({ people, onClose }) {
           </span>
         </div>
 
-        {/* split between */}
-        <div style={row} onClick={() => { setKeypadOpen(false); setPicker("split"); }}>
-          <span style={{ ...label, color: "var(--text-2)" }}>Split between</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <Cluster ids={[...splitIds]} people={localPeople} />
-            <span className="legend">{String(splitIds.size).padStart(2, "0")} people</span>
-          </span>
-        </div>
+        {!sliced ? (
+          <>
+            {/* split between (even) */}
+            <div style={row} onClick={() => { setKeypadOpen(false); setPicker("split"); }}>
+              <span style={{ ...label, color: "var(--text-2)" }}>Split between</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Cluster ids={[...splitIds]} people={localPeople} />
+                <span className="legend">{String(splitIds.size).padStart(2, "0")} people</span>
+              </span>
+            </div>
+            <div style={{ padding: "18px 20px", borderTop: "1px solid var(--hairline)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span className="legend">Split evenly</span>
+                <span style={{ display: "flex", alignItems: "baseline", gap: 2 }}>
+                  <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(currency)}</span>
+                  <span className="money" style={{ fontSize: 15 }}>{perHead ? perHead.toLocaleString("en-US", { maximumFractionDigits: 2 }) : "0"}</span>
+                  <span style={{ fontSize: 12, color: "var(--text-2)", marginLeft: 4 }}>each</span>
+                </span>
+              </div>
+              <button onClick={enterSliced} style={{ width: "100%", marginTop: 14, height: 44, border: "1px solid var(--hairline)", borderRadius: 12, fontSize: 14, fontWeight: 500 }}>Split it up</button>
+            </div>
+          </>
+        ) : (
+          <div style={{ padding: "16px 20px", borderTop: "1px solid var(--hairline)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <span className="legend">Split into items</span>
+              <button onClick={() => setSliced(false)} className="mono" style={{ fontSize: 10, letterSpacing: "0.08em", color: "var(--text-3)", textTransform: "uppercase" }}>even split</button>
+            </div>
 
-        {/* per-head + split it up */}
-        <div style={{ padding: "18px 20px", borderTop: "1px solid var(--hairline)" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span className="legend">Split evenly</span>
-            <span style={{ display: "flex", alignItems: "baseline", gap: 2 }}>
-              <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(currency)}</span>
-              <span className="money" style={{ fontSize: 15 }}>{perHead ? perHead.toLocaleString("en-US", { maximumFractionDigits: 2 }) : "0"}</span>
-              <span style={{ fontSize: 12, color: "var(--text-2)", marginLeft: 4 }}>each</span>
-            </span>
+            {/* the rest */}
+            <div style={itemCard}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 15, fontWeight: 600 }}>The rest</span>
+                  <span className="legend" style={{ background: "var(--bg)", padding: "2px 6px", borderRadius: 6 }}>auto</span>
+                </span>
+                <span style={{ display: "flex", alignItems: "baseline", gap: 2, color: balanced ? "var(--text)" : danger }}>
+                  <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(currency)}</span>
+                  <span className="money" style={{ fontSize: 15 }}>{restAmount.toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>
+                </span>
+              </div>
+              <div onClick={() => setItemPicker("rest")} style={{ marginTop: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
+                <Cluster ids={[...restMembers]} people={localPeople} />
+                <span className="legend">{restMembers.size} in</span>
+              </div>
+            </div>
+
+            {/* carve-outs */}
+            {items.map((it) => (
+              <div key={it.id} style={itemCard}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input value={it.label} onChange={(e) => updateItem(it.id, "label", e.target.value)} onFocus={() => setKeypadOpen(false)} placeholder="Item" style={{ flex: 1, background: "none", border: "none", outline: "none", fontSize: 15, fontWeight: 600 }} />
+                  <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(currency)}</span>
+                  <input value={it.amount} onChange={(e) => updateItem(it.id, "amount", e.target.value.replace(/[^0-9.]/g, ""))} onFocus={() => setKeypadOpen(false)} inputMode="decimal" placeholder="0" style={{ width: 68, textAlign: "right", background: "none", border: "none", outline: "none", fontFamily: "var(--font-money)", fontWeight: 800, fontSize: 15 }} />
+                  <button onClick={() => removeItem(it.id)} style={{ width: 24, height: 24, borderRadius: "50%", color: "var(--text-3)", fontSize: 13, flex: "none" }}>✕</button>
+                </div>
+                <div onClick={() => setItemPicker(it.id)} style={{ marginTop: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
+                  {it.members.size ? (
+                    <>
+                      <Cluster ids={[...it.members]} people={localPeople} />
+                      <span className="legend">{it.members.size} in</span>
+                    </>
+                  ) : (
+                    <span className="legend" style={{ color: "var(--text-3)" }}>+ who's in?</span>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            <button onClick={addItem} style={{ width: "100%", height: 44, border: "1px dashed var(--hairline)", borderRadius: 12, fontSize: 14, fontWeight: 500, color: "var(--text-2)", marginTop: 4 }}>+ Add item</button>
+
+            {/* checks out */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--hairline)" }}>
+              <span style={{ fontSize: 13, fontWeight: 500, color: balanced ? "var(--text)" : danger }}>{balanced ? "✓ Checks out" : "Items exceed total"}</span>
+              <span style={{ display: "flex", alignItems: "baseline", gap: 2 }}>
+                <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(currency)}</span>
+                <span className="money" style={{ fontSize: 15 }}>{total.toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>
+              </span>
+            </div>
+
+            {/* per-person peek */}
+            {Object.keys(shares).length > 0 && (
+              <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                {Object.entries(shares).map(([pid, amt]) => {
+                  const p = localPeople.find((x) => x.id === pid);
+                  return (
+                    <div key={pid} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ width: 22, height: 22, borderRadius: "50%", background: p?.avatar_color || "var(--knob-off)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10 }}>{p?.avatar_emoji || "🙂"}</span>
+                      <span style={{ flex: 1, fontSize: 13 }}>{p?.is_self ? "You" : p?.display_name || "—"}</span>
+                      <span style={{ display: "flex", alignItems: "baseline", gap: 2 }}>
+                        <span style={{ fontSize: 11, color: "var(--text-2)" }}>{currencySymbol(currency)}</span>
+                        <span className="money" style={{ fontSize: 13 }}>{amt.toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-          <button onClick={() => setNote("Split it up — item-by-item splitting is the next build step.")} style={{ width: "100%", marginTop: 14, height: 44, border: "1px solid var(--hairline)", borderRadius: 12, fontSize: 14, fontWeight: 500 }}>Split it up</button>
-        </div>
+        )}
 
         {/* logged timestamp — read-only */}
         <div style={{ padding: "10px 20px 20px", textAlign: "center" }}>
