@@ -39,7 +39,8 @@ export default function ExpenseForm({ people, onClose }) {
   const [localPeople, setLocalPeople] = useState(people);
   const [amount, setAmount] = useState("0");
   const [currency, setCurrency] = useState("THB");
-  const [title, setTitle] = useState(nowTitle());
+  const [ts] = useState(nowTitle());
+  const [title, setTitle] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [paidBy, setPaidBy] = useState(null);
   const [splitIds, setSplitIds] = useState(new Set());
@@ -116,9 +117,10 @@ export default function ExpenseForm({ people, onClose }) {
     if (!canSave) return;
     setSaving(true);
     const owner_id = self.owner_id;
+    if (foreign && rateNum > 0) localStorage.setItem(`papaya:rate:${currency}:${baseCurrency}`, rate);
     const { data: exp } = await supabase
       .from("expenses")
-      .insert({ owner_id, recording_id: recording?.id || null, paid_by: paidBy, title, total_amount: total, currency, exchange_rate: foreign && rateNum > 0 ? rateNum : null })
+      .insert({ owner_id, recording_id: recording?.id || null, paid_by: paidBy, title: title.trim() || ts, total_amount: total, currency, exchange_rate: foreign && rateNum > 0 ? rateNum : null })
       .select()
       .single();
     const { data: item } = await supabase
@@ -210,13 +212,13 @@ export default function ExpenseForm({ people, onClose }) {
           </div>
         )}
 
-        {/* title */}
+        {/* title — the timestamp shows as a clearable hint, not fixed text */}
         <div style={row} onClick={() => { setKeypadOpen(false); setEditingTitle(true); }}>
           <span style={{ ...label, color: "var(--text-2)" }}>Title</span>
           {editingTitle ? (
-            <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} onBlur={() => setEditingTitle(false)} onKeyDown={(e) => e.key === "Enter" && setEditingTitle(false)} style={{ textAlign: "right", background: "none", border: "none", outline: "none", fontSize: 15, maxWidth: 220 }} />
+            <input autoFocus value={title} placeholder={ts} onChange={(e) => setTitle(e.target.value)} onBlur={() => setEditingTitle(false)} onKeyDown={(e) => e.key === "Enter" && setEditingTitle(false)} style={{ textAlign: "right", background: "none", border: "none", outline: "none", fontSize: 15, maxWidth: 220 }} />
           ) : (
-            <span style={{ ...label, color: "var(--text)" }}>{title}</span>
+            <span style={{ ...label, color: title ? "var(--text)" : "var(--text-3)" }}>{title || ts}</span>
           )}
         </div>
 
@@ -250,6 +252,11 @@ export default function ExpenseForm({ people, onClose }) {
           </div>
           <button onClick={() => setNote("Split it up — item-by-item splitting is the next build step.")} style={{ width: "100%", marginTop: 14, height: 44, border: "1px solid var(--hairline)", borderRadius: 12, fontSize: 14, fontWeight: 500 }}>Split it up</button>
         </div>
+
+        {/* logged timestamp — read-only */}
+        <div style={{ padding: "10px 20px 20px", textAlign: "center" }}>
+          <span className="mono" style={{ fontSize: 10.5, color: "var(--text-4)" }}>logged · {ts}</span>
+        </div>
       </div>
 
       {/* keypad */}
@@ -270,7 +277,7 @@ export default function ExpenseForm({ people, onClose }) {
             <div style={{ width: 36, height: 3, borderRadius: 2, background: "#DCD6C6", margin: "0 auto 8px" }} />
             <div className="legend" style={{ padding: "6px 20px 4px" }}>Currency</div>
             {CURRENCIES.map((c) => (
-              <button key={c} onClick={() => { setCurrency(c); setCurrencyOpen(false); if (c === baseCurrency) setRate(""); }} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderTop: "1px solid var(--hairline-3)" }}>
+              <button key={c} onClick={() => { setCurrency(c); setCurrencyOpen(false); if (c === baseCurrency) { setRate(""); } else { setRate(localStorage.getItem(`papaya:rate:${c}:${baseCurrency}`) || "1"); } }} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderTop: "1px solid var(--hairline-3)" }}>
                 <span style={{ fontSize: 15 }}>{c}</span>
                 <span style={{ fontSize: 16, color: "var(--text-2)" }}>{currencySymbol(c)}{c === currency ? "  ✓" : ""}</span>
               </button>
