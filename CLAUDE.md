@@ -44,7 +44,7 @@ Deeper design rationale lives in the agent memory file (`~/.claude/projects/-Use
 
 Settled-indicator green uses `var(--settled, #4E7A55)` with an inline fallback — no `--settled` token defined yet; per the design note, make settled/open colors an intentional TE-palette choice in the styling/settlement pass.
 
-Commits on `papaya-v2`: `8725d11` (foundation/Home/expense form), `c2a23f2` (cleanup + form refinements). The finished "Split it up" work + all of Phase 5 are **uncommitted** (ExpenseForm.jsx, PeoplePicker.jsx, App.jsx, + 3 new screens). Dev/demo note: testing left an empty "Chiang Mai trip" recording (now the live session) and a couple of harmless test expenses in the seed DB — re-seed to reset.
+Commits on `papaya-v2`: `8725d11` (foundation/Home/expense form), `c2a23f2` (cleanup + form refinements), **`77e7b08` (Phase 4b Split it up + Phase 5 Records/detail/create + overlay-stack nav + suggestion chips)**. Not pushed. Dev/demo note: testing left an empty "Chiang Mai trip" recording (now the live session) and a couple of harmless test expenses in the seed DB — re-seed to reset.
 
 ---
 
