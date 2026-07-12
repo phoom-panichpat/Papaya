@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=Doto:wght@700;800;900&display=swap" rel="stylesheet">
+<style>
+body { margin: 0; background: #F3F0E9; }
+a { color: #1D1B16; }
+a:hover { color: #E8622A; }
+input::placeholder { color: #A39D8D; }
+</style>
+</helmet>
+
+<div data-screen-label="Expense form · {{ phaseLabel }}" style="width: 390px; height: 844px; background: #F3F0E9; border: 1px solid #D9D5CA; border-radius: 28px; overflow: hidden; position: relative; display: flex; flex-direction: column; box-sizing: border-box; font-family: 'Instrument Sans', 'Helvetica Neue', sans-serif; user-select: none;">
+
+  <!-- Status bar -->
+  <div style="height: 44px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 6px 26px 0 30px;">
+    <div style="font: 600 13px 'Instrument Sans', sans-serif; color: #1D1B16;">2:14</div>
+    <div style="width: 22px; height: 11px; border: 1px solid #C0BAAA; border-radius: 3.5px; padding: 1.5px; box-sizing: border-box; display: flex;">
+      <div style="width: 62%; height: 100%; background: #C0BAAA; border-radius: 1.5px;"></div>
+    </div>
+  </div>
+
+  <!-- Header -->
+  <div style="height: 54px; flex: none; display: flex; align-items: center; padding: 0 16px; gap: 8px;">
+    <button onClick="{{ noop }}" style="width: 36px; height: 36px; flex: none; border: none; background: none; cursor: pointer; font: 400 18px 'Instrument Sans', sans-serif; color: #1D1B16; border-radius: 50%; padding: 0; transition: background 120ms ease;" style-active="background: #ECE8DC;">←</button>
+    <div style="flex: 1; display: flex; justify-content: center;">
+      <div style="display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 13px; background: #FCFAF5; border: 1px solid #E4E0D3; border-radius: 999px;">
+        <span style="font: 600 9.5px 'IBM Plex Mono', monospace; letter-spacing: 0.13em; color: #8E887A; white-space: nowrap;">RECORDING · LISBON</span>
+        <span style="font: 400 9px 'IBM Plex Mono', monospace; color: #C0BAAA; line-height: 1;">⌄</span>
+      </div>
+    </div>
+    <sc-if value="{{ accentSave }}" hint-placeholder-val="{{ true }}">
+      <button onClick="{{ noop }}" style="height: 32px; flex: none; padding: 0 17px; border: none; border-radius: 999px; background: #E8622A; color: #FCFAF5; font: 600 13px 'Instrument Sans', sans-serif; cursor: pointer; transition: transform 110ms cubic-bezier(0.2, 0, 0, 1);" style-active="transform: scale(0.94);">Save</button>
+    </sc-if>
+    <sc-if value="{{ accentPicker }}" hint-placeholder-val="{{ false }}">
+      <button onClick="{{ noop }}" style="height: 32px; flex: none; padding: 0 17px; border: none; border-radius: 999px; background: #1D1B16; color: #FCFAF5; font: 600 13px 'Instrument Sans', sans-serif; cursor: pointer; transition: transform 110ms cubic-bezier(0.2, 0, 0, 1);" style-active="transform: scale(0.94);">Save</button>
+    </sc-if>
+  </div>
+
+  <!-- Scroll body -->
+  <div style="flex: 1; overflow-y: auto; scrollbar-width: none; padding: 4px 0 {{ padBottom }}px; box-sizing: border-box;">
+
+    <!-- Amount -->
+    <div style="padding: 24px 20px 22px; text-align: center;">
+      <div style="font: 600 9.5px 'IBM Plex Mono', monospace; letter-spacing: 0.16em; color: #8E887A;">TOTAL AMOUNT</div>
+      <div onClick="{{ onAmountTap }}" style="margin-top: 12px; display: flex; align-items: baseline; justify-content: center; gap: 8px; cursor: pointer;">
+        <span style="font: 400 20px 'Instrument Sans', sans-serif; color: #8E887A;">{{ sym }}</span>
+        <span style="font: 800 46px 'Doto', monospace; letter-spacing: 0.02em; line-height: 1; color: {{ bigColor }};">{{ bigAmount }}</span>
+        <button onClick="{{ onCurrencyTap }}" style="display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 11px; margin-left: 4px; background: #FCFAF5; border: 1px solid #E4E0D3; border-radius: 999px; cursor: pointer; align-self: center; transition: background 120ms ease;" style-active="background: #F6F3EB;">
+          <span style="font: 600 10px 'IBM Plex Mono', monospace; letter-spacing: 0.1em; color: #1D1B16;">{{ currency }}</span>
+          <span style="font: 400 8.5px 'IBM Plex Mono', monospace; color: #C0BAAA; line-height: 1;">⌄</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Currency reveal (accordion) -->
+    <div style="display: grid; grid-template-rows: {{ curRows }}; transition: grid-template-rows 260ms cubic-bezier(0.2, 0, 0, 1);">
+      <div style="overflow: hidden; min-height: 0;">
+        <div style="margin: 0 20px 20px; background: #FCFAF5; border: 1px solid #E4E0D3; border-radius: 18px; padding: 3px 16px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 11px 0;">
+            <span style="font: 400 14px 'Instrument Sans', sans-serif; color: #1D1B16;">Currency</span>
+            <div style="display: flex; border: 1px solid #E4E0D3; border-radius: 999px; overflow: hidden;">
+              <sc-for list="{{ segs }}" as="s" hint-placeholder-count="3">
+                <button onClick="{{ s.tap }}" style="border: none; cursor: pointer; padding: 7px 13px; font: 600 10px 'IBM Plex Mono', monospace; letter-spacing: 0.08em; background: {{ s.bg }}; color: {{ s.fg }}; transition: background 120ms ease, color 120ms ease;">{{ s.code }}</button>
+              </sc-for>
+            </div>
+          </div>
+          <sc-if value="{{ showRate }}" hint-placeholder-val="{{ false }}">
+            <div style="border-top: 1px solid #EDE9DD; padding: 10px 0; display: flex; align-items: center; justify-content: space-between;">
+              <span style="font: 400 14px 'Instrument Sans', sans-serif; color: #1D1B16;">Exchange rate</span>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font: 400 10.5px 'IBM Plex Mono', monospace; color: #A39D8D; white-space: nowrap; flex: none;">1 {{ currency }} =</span>
+                <input value="{{ rate }}" onChange="{{ onRate }}" inputMode="decimal" style="width: 56px; height: 30px; border: 1px solid #E4E0D3; border-radius: 8px; background: #F3F0E9; text-align: center; font: 800 13px 'Doto', monospace; color: #1D1B16; box-sizing: border-box;">
+                <span style="font: 400 10.5px 'IBM Plex Mono', monospace; color: #A39D8D;">EUR</span>
+              </div>
+            </div>
+            <div style="border-top: 1px solid #EDE9DD; padding: 10px 0 12px; display: flex; align-items: baseline; gap: 4px;">
+              <span style="font: 400 10.5px 'IBM Plex Mono', monospace; color: #A39D8D;">≈</span>
+              <span style="font: 400 10.5px 'Instrument Sans', sans-serif; color: #A39D8D;">€</span>
+              <span style="font: 800 12.5px 'Doto', monospace; color: #8E887A;">{{ approxAmt }}</span>
+              <span style="font: 400 10.5px 'IBM Plex Mono', monospace; color: #A39D8D;">in base currency</span>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+    </div>
+
+    <!-- Detail rows -->
+    <div style="margin: 0 20px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; height: 54px; border-top: 1px solid #E4E0D3;">
+        <span style="font: 400 15px 'Instrument Sans', sans-serif; color: #1D1B16;">Title</span>
+        <span style="display: flex; align-items: center; gap: 7px; font: 400 10.5px 'IBM Plex Mono', monospace; color: #8E887A; white-space: nowrap;">Jul 4 · 2:14 PM<span style="color: #C0BAAA; font-size: 12px;">›</span></span>
+      </div>
+      <div style="display: flex; align-items: center; justify-content: space-between; height: 54px; border-top: 1px solid #E4E0D3;">
+        <span style="font: 400 15px 'Instrument Sans', sans-serif; color: #1D1B16;">Paid by</span>
+        <span style="display: flex; align-items: center; gap: 8px;">
+          <span style="width: 22px; height: 22px; border-radius: 50%; background: #ECE8DC; display: flex; align-items: center; justify-content: center; font: 500 9px 'IBM Plex Mono', monospace; color: #8E887A;">Y</span>
+          <span style="font: 400 14px 'Instrument Sans', sans-serif; color: #1D1B16;">You</span>
+          <span style="font: 400 9px 'IBM Plex Mono', monospace; color: #C0BAAA;">⌄</span>
+        </span>
+      </div>
+      <div onClick="{{ onSplitRowTap }}" style="display: flex; align-items: center; justify-content: space-between; height: 54px; border-top: 1px solid #E4E0D3; cursor: pointer; transition: background 120ms ease;" style-active="background: #ECE8DC;">
+        <span style="font: 400 15px 'Instrument Sans', sans-serif; color: #1D1B16;">Split between</span>
+        <span style="display: flex; align-items: center; gap: 9px;">
+          <span style="display: flex; padding-left: 6px;">
+            <sc-for list="{{ splitAvs }}" as="a" hint-placeholder-count="4">
+              <span style="width: 22px; height: 22px; border-radius: 50%; background: #ECE8DC; border: 1.5px solid #F3F0E9; display: flex; align-items: center; justify-content: center; font: 500 9px 'IBM Plex Mono', monospace; color: #8E887A; margin-left: -6px; box-sizing: content-box;">{{ a.letter }}</span>
+            </sc-for>
+          </span>
+          <span style="font: 500 9.5px 'IBM Plex Mono', monospace; letter-spacing: 0.1em; color: #A39D8D; white-space: nowrap; flex: none;">{{ splitLabel }}</span>
+        </span>
+      </div>
+    </div>
+
+    <!-- "Split it up" (collapses once sliced) -->
+    <div style="display: grid; grid-template-rows: {{ btnRows }}; transition: grid-template-rows 260ms cubic-bezier(0.2, 0, 0, 1);">
+      <div style="overflow: hidden; min-height: 0;">
+        <div style="padding: 16px 20px 8px;">
+          <button onClick="{{ onSplitItUp }}" style="width: 100%; height: 42px; border: 1px solid #E4E0D3; border-radius: 999px; background: #FCFAF5; font: 600 13px 'Instrument Sans', sans-serif; color: #1D1B16; cursor: pointer; transition: background 120ms ease;" style-active="background: #F6F3EB;">Split it up</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Split section (accordion) -->
+    <div style="display: grid; grid-template-rows: {{ secRows }}; transition: grid-template-rows 260ms cubic-bezier(0.2, 0, 0, 1);">
+      <div style="overflow: hidden; min-height: 0;">
+        <div style="padding: 16px 20px 0;">
+          <div style="display: flex; align-items: baseline; justify-content: space-between; margin: 0 2px 10px;">
+            <span style="font: 600 9.5px 'IBM Plex Mono', monospace; letter-spacing: 0.16em; color: #8E887A;">SPLIT</span>
+            <span style="font: 400 10px 'IBM Plex Mono', monospace; letter-spacing: 0.08em; color: #C0BAAA; white-space: nowrap; flex: none;">{{ peopleCountLabel }}</span>
+          </div>
+
+          <!-- The rest (auto) -->
+          <div style="background: #FCFAF5; border: 1px solid #E4E0D3; border-radius: 18px; padding: 14px 16px;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <span style="font: 500 15px 'Instrument Sans', sans-serif; color: #1D1B16; white-space: nowrap;">The rest</span>
+                <span style="font: 600 8.5px 'IBM Plex Mono', monospace; letter-spacing: 0.12em; color: #A39D8D; border: 1px solid #E4E0D3; border-radius: 6px; padding: 2.5px 5px;">AUTO</span>
+              </span>
+              <span style="display: flex; align-items: baseline; gap: 3px; flex: none;">
+                <span style="font: 400 12px 'Instrument Sans', sans-serif; color: #8E887A;">{{ sym }}</span>
+                <span style="font: 800 16.5px 'Doto', monospace; letter-spacing: 0.02em; color: #1D1B16;">{{ restAmt }}</span>
+              </span>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px;">
+              <span style="font: 400 10.5px 'IBM Plex Mono', monospace; color: #A39D8D; white-space: nowrap;">total − items · read-only</span>
+              <span style="display: flex; padding-left: 5px;">
+                <sc-for list="{{ splitAvs }}" as="a" hint-placeholder-count="4">
+                  <span style="width: 20px; height: 20px; border-radius: 50%; background: #ECE8DC; border: 1.5px solid #FCFAF5; display: flex; align-items: center; justify-content: center; font: 500 8.5px 'IBM Plex Mono', monospace; color: #8E887A; margin-left: -5px; box-sizing: content-box;">{{ a.letter }}</span>
+                </sc-for>
+              </span>
+            </div>
+          </div>
+
+          <!-- Carve-out items -->
+          <sc-for list="{{ items }}" as="it" hint-placeholder-count="1">
+            <div style="background: #FCFAF5; border: 1px solid #E4E0D3; border-radius: 18px; padding: 14px 16px; margin-top: 10px;">
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="font: 500 15px 'Instrument Sans', sans-serif; color: #1D1B16;">{{ it.name }}</span>
+                <button onClick="{{ it.tapAmt }}" style="border: none; background: none; cursor: pointer; display: flex; align-items: baseline; gap: 3px; padding: 2px 1px; border-bottom: {{ it.amtBorder }}; transition: border-color 120ms ease;">
+                  <span style="font: 400 12px 'Instrument Sans', sans-serif; color: #8E887A;">{{ sym }}</span>
+                  <span style="font: 800 16.5px 'Doto', monospace; letter-spacing: 0.02em; color: #1D1B16;">{{ it.amt }}</span>
+                </button>
+              </div>
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px;">
+                <span style="font: 400 10.5px 'IBM Plex Mono', monospace; color: #A39D8D;">{{ it.metaLine }}</span>
+                <button onClick="{{ it.tapWho }}" style="border: none; background: none; cursor: pointer; display: flex; padding: 0 0 0 5px;">
+                  <sc-for list="{{ it.avs }}" as="a" hint-placeholder-count="2">
+                    <span style="width: 20px; height: 20px; border-radius: 50%; background: #ECE8DC; border: 1.5px solid #FCFAF5; display: flex; align-items: center; justify-content: center; font: 500 8.5px 'IBM Plex Mono', monospace; color: #8E887A; margin-left: -5px; box-sizing: content-box;">{{ a.letter }}</span>
+                  </sc-for>
+                </button>
+              </div>
+            </div>
+          </sc-for>
+
+          <button onClick="{{ onAddItem }}" style="width: 100%; height: 42px; margin-top: 10px; border: 1px solid #E4E0D3; border-radius: 999px; background: none; font: 600 13px 'Instrument Sans', sans-serif; color: #8E887A; cursor: pointer; transition: background 120ms ease;" style-active="background: #ECE8DC;">+ Add item</button>
+
+          <!-- Reconciliation bar: quiet when it checks out, inverts to ink when off -->
+          <div style="margin-top: 14px; border: 1px solid {{ aBorder }}; background: {{ aBg }}; border-radius: 12px; padding: 11px 14px; display: flex; align-items: center; justify-content: space-between; transition: background 120ms ease, border-color 120ms ease;">
+            <span style="display: flex; align-items: center; gap: 9px;">
+              <span style="width: 17px; height: 17px; border: 1px solid {{ aGlyphBorder }}; border-radius: 50%; display: flex; align-items: center; justify-content: center; font: 600 8.5px 'IBM Plex Mono', monospace; color: {{ aFg }}; box-sizing: border-box;">{{ anchorGlyph }}</span>
+              <span style="font: 600 9.5px 'IBM Plex Mono', monospace; letter-spacing: 0.15em; color: {{ aFg }};">{{ anchorLegend }}</span>
+            </span>
+            <span style="display: flex; align-items: baseline; gap: 3px;">
+              <span style="font: 400 12px 'Instrument Sans', sans-serif; color: {{ aMut }};">{{ sym }}</span>
+              <span style="font: 800 16.5px 'Doto', monospace; letter-spacing: 0.02em; color: {{ aFg }};">{{ anchorAmt }}</span>
+            </span>
+          </div>
+
+          <!-- Per-person peek -->
+          <div style="margin: 20px 2px 0;">
+            <div style="font: 600 9.5px 'IBM Plex Mono', monospace; letter-spacing: 0.16em; color: #8E887A; margin-bottom: 4px;">EACH PERSON</div>
+            <sc-for list="{{ perPeople }}" as="pp" hint-placeholder-count="4">
+              <div style="display: flex; align-items: center; gap: 10px; height: 44px;">
+                <span style="width: 20px; height: 20px; flex: none; border-radius: 50%; background: #ECE8DC; display: flex; align-items: center; justify-content: center; font: 500 8.5px 'IBM Plex Mono', monospace; color: #8E887A;">{{ pp.letter }}</span>
+                <span style="font: 400 14px 'Instrument Sans', sans-serif; color: #1D1B16; flex: none;">{{ pp.name }}</span>
+                <span style="font: 400 9.5px 'IBM Plex Mono', monospace; color: #A39D8D; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto;">{{ pp.breakdown }}</span>
+                <span style="flex: 1; height: 1px; background: #E7E2D5;"></span>
+                <span style="display: flex; align-items: baseline; gap: 3px; flex: none;">
+                  <span style="font: 400 11px 'Instrument Sans', sans-serif; color: #8E887A;">{{ sym }}</span>
+                  <span style="font: 800 15px 'Doto', monospace; letter-spacing: 0.02em; color: #1D1B16;">{{ pp.amt }}</span>
+                </span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Numeric keypad -->
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; z-index: 30; background: #F3F0E9; border-top: 1px solid #E4E0D3; transform: {{ kpY }}; transition: transform 240ms cubic-bezier(0.2, 0, 0, 1);">
+    <div style="text-align: center; padding: 9px 0 7px; font: 600 9px 'IBM Plex Mono', monospace; letter-spacing: 0.16em; color: #A39D8D;">{{ kpLabel }}</div>
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); padding-bottom: 24px;">
+      <sc-for list="{{ keys }}" as="key" hint-placeholder-count="12">
+        <button onClick="{{ key.tap }}" style="height: 60px; border: none; border-radius: 0; background: none; cursor: pointer; border-top: 1px solid #E4E0D3; border-left: {{ key.bl }}; font: {{ key.font }}; color: {{ key.color }}; transition: background 120ms ease; padding: 0;" style-active="background: #ECE8DC;">{{ key.k }}</button>
+      </sc-for>
+    </div>
+  </div>
+
+  <!-- Home indicator -->
+  <div style="position: absolute; bottom: 7px; left: 50%; transform: translateX(-50%); width: 118px; height: 4px; border-radius: 2px; background: #1D1B16; opacity: 0.8; z-index: 50; pointer-events: none;"></div>
+
+  <!-- People picker sheet -->
+  <div style="position: absolute; inset: 0; z-index: 40; pointer-events: {{ scrimPe }};">
+    <div onClick="{{ onScrim }}" style="position: absolute; inset: 0; background: rgba(29, 27, 22, 0.20); opacity: {{ scrimOp }}; transition: opacity 140ms ease;"></div>
+    <div style="position: absolute; left: 0; right: 0; bottom: 0; max-height: 86%; background: #FCFAF5; border: 1px solid #E4E0D3; border-bottom: none; border-radius: 22px 22px 0 0; transform: {{ sheetY }}; transition: transform 240ms cubic-bezier(0.2, 0, 0, 1); display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box;">
+      <div style="width: 36px; height: 3px; border-radius: 2px; background: #DCD6C6; margin: 10px auto 8px; flex: none;"></div>
+      <div style="display: flex; align-items: flex-start; justify-content: space-between; padding: 4px 20px 12px; flex: none;">
+        <div>
+          <div style="font: 600 18px 'Instrument Sans', sans-serif; letter-spacing: -0.01em; color: #1D1B16;">Who's in</div>
+          <div style="margin-top: 4px; font: 400 9.5px 'IBM Plex Mono', monospace; letter-spacing: 0.12em; color: #A39D8D;">{{ selCountLabel }}</div>
+        </div>
+        <button onClick="{{ onDone }}" style="height: 34px; padding: 0 18px; border: none; border-radius: 999px; background: #1D1B16; color: #FCFAF5; font: 600 13px 'Instrument Sans', sans-serif; cursor: pointer; transition: transform 110ms cubic-bezier(0.2, 0, 0, 1);" style-active="transform: scale(0.94);">Done</button>
+      </div>
+      <div style="padding: 0 20px; flex: none;">
+        <input value="{{ search }}" onChange="{{ onSearch }}" placeholder="Search people, or type to add" style="width: 100%; box-sizing: border-box; height: 40px; border: 1px solid #E4E0D3; border-radius: 10px; background: #F3F0E9; padding: 0 14px; font: 400 12px 'IBM Plex Mono', monospace; color: #1D1B16; outline: none;">
+      </div>
+      <sc-if value="{{ showCreate }}" hint-placeholder-val="{{ false }}">
+        <div style="padding: 8px 20px 0; flex: none;">
+          <button onClick="{{ onCreate }}" style="width: 100%; height: 36px; border: 1px solid #E4E0D3; border-radius: 999px; background: none; font: 600 10px 'IBM Plex Mono', monospace; letter-spacing: 0.1em; color: #1D1B16; cursor: pointer; transition: background 120ms ease;" style-active="background: #F6F3EB;">+ ADD “{{ createName }}”</button>
+        </div>
+      </sc-if>
+      <div style="display: flex; gap: 8px; padding: 12px 20px 0; flex: none;">
+        <button onClick="{{ chipEveryone }}" style="height: 30px; padding: 0 13px; border: 1px solid #E4E0D3; border-radius: 999px; background: none; font: 600 9.5px 'IBM Plex Mono', monospace; letter-spacing: 0.11em; color: #1D1B16; cursor: pointer; white-space: nowrap; flex: none; transition: background 120ms ease;" style-active="background: #F6F3EB;">EVERYONE</button>
+        <button onClick="{{ chipLast }}" style="height: 30px; padding: 0 13px; border: 1px solid #E4E0D3; border-radius: 999px; background: none; font: 600 9.5px 'IBM Plex Mono', monospace; letter-spacing: 0.11em; color: #1D1B16; cursor: pointer; white-space: nowrap; flex: none; transition: background 120ms ease;" style-active="background: #F6F3EB;">SAME AS LAST TIME</button>
+      </div>
+      <div style="flex: 1; overflow-y: auto; scrollbar-width: none; padding: 2px 20px 28px;">
+        <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+          <div style="margin-top: 20px;">
+            <div style="font: 600 9.5px 'IBM Plex Mono', monospace; letter-spacing: 0.16em; color: #A39D8D;">{{ g.label }}</div>
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px 8px; margin-top: 13px;">
+              <sc-for list="{{ g.people }}" as="p" hint-placeholder-count="4">
+                <button onClick="{{ p.tap }}" style="border: none; background: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 0;">
+                  <span style="position: relative; width: 46px; height: 46px; display: block;">
+                    <span style="position: absolute; inset: 0; border-radius: 50%; background: {{ p.circBg }}; border: 1px solid {{ p.circBorder }}; display: flex; align-items: center; justify-content: center; font: 600 15px 'Instrument Sans', sans-serif; color: {{ p.circFg }}; transition: background 120ms ease, color 120ms ease, border-color 120ms ease; box-sizing: border-box;">{{ p.letter }}</span>
+                    <span style="position: absolute; right: -3px; top: -3px; width: 17px; height: 17px; border-radius: 50%; background: {{ p.badgeBg }}; border: 2px solid #FCFAF5; display: flex; align-items: center; justify-content: center; font: 700 8px 'IBM Plex Mono', monospace; color: #FCFAF5; opacity: {{ p.badgeOp }}; transform: scale({{ p.badgeScale }}); transition: opacity 140ms ease, transform 170ms cubic-bezier(0.2, 0, 0, 1); box-sizing: border-box;">✓</span>
+                  </span>
+                  <span style="font: 400 11.5px 'Instrument Sans', sans-serif; color: #8E887A;">{{ p.name }}</span>
+                </button>
+              </sc-for>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;: {&quot;width&quot;: 392, &quot;height&quot;: 846}, &quot;initialState&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;fresh&quot;, &quot;sliced&quot;, &quot;picker&quot;, &quot;currency&quot;], &quot;default&quot;: &quot;fresh&quot;, &quot;tsType&quot;: &quot;'fresh' | 'sliced' | 'picker' | 'currency'&quot;, &quot;section&quot;: &quot;State&quot;}, &quot;accentTarget&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;save&quot;, &quot;picker&quot;], &quot;default&quot;: &quot;save&quot;, &quot;tsType&quot;: &quot;'save' | 'picker'&quot;, &quot;section&quot;: &quot;Accent&quot;}, &quot;keypadDoto&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Keypad&quot;}}">
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const PEOPLE = [
+      { id: 'you', name: 'You', group: 'rec' },
+      { id: 'ana', name: 'Ana', group: 'rec' },
+      { id: 'rui', name: 'Rui', group: 'rec' },
+      { id: 'sofia', name: 'Sofia', group: 'rec' },
+      { id: 'marco', name: 'Marco', group: 'recent' },
+      { id: 'priya', name: 'Priya', group: 'recent' },
+      { id: 'tom', name: 'Tom', group: 'recent' },
+      { id: 'bea', name: 'Bea', group: 'else' },
+      { id: 'diego', name: 'Diego', group: 'else' },
+      { id: 'elena', name: 'Elena', group: 'else' },
+      { id: 'nadia', name: 'Nadia', group: 'else' }
+    ];
+    const ph = props.initialState || 'fresh';
+    const s = {
+      phase: ph,
+      people: PEOPLE,
+      currency: 'EUR',
+      currencyOpen: false,
+      amountStr: '',
+      sliced: false,
+      items: [],
+      selected: ['you', 'ana', 'rui', 'sofia'],
+      keypadUp: false,
+      keypadTarget: 'total',
+      pickerOpen: false,
+      pickerTarget: 'split',
+      pickerSel: [],
+      search: '',
+      rate: '0.92',
+      itemN: 0
+    };
+    if (ph === 'fresh') { s.keypadUp = true; }
+    if (ph === 'sliced' || ph === 'picker') {
+      s.amountStr = '120';
+      s.sliced = true;
+      s.items = [{ id: 'wine', name: 'Wine', amountStr: '40', people: ['you', 'ana'] }];
+      s.itemN = 1;
+    }
+    if (ph === 'picker') { s.pickerOpen = true; s.pickerSel = ['you', 'ana', 'rui']; }
+    if (ph === 'currency') { s.amountStr = '150'; s.currency = 'USD'; s.currencyOpen = true; }
+    this.state = s;
+  }
+
+  total() { return parseFloat(this.state.amountStr) || 0; }
+  itemAmt(it) { return parseFloat(it.amountStr) || 0; }
+  itemsSum() { return this.state.items.reduce((a, it) => a + this.itemAmt(it), 0); }
+  fmt2(n) { return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  trimN(n) { return String(parseFloat(n.toFixed(2))); }
+  padN(n) { return String(n).padStart(2, '0'); }
+  fmtBig(s) {
+    if (!s) return '0';
+    const parts = s.split('.');
+    const int = (parts[0] || '0').replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return parts.length > 1 ? int + '.' + parts[1] : int;
+  }
+
+  applyKey(s, k) {
+    if (k === '⌫') return s.slice(0, -1);
+    if (k === '.') { if (s.includes('.')) return s; return s === '' ? '0.' : s + '.'; }
+    const parts = s.split('.');
+    if (parts.length > 1) { if (parts[1].length >= 2) return s; return s + k; }
+    if (parts[0].length >= 7) return s;
+    if (parts[0] === '0') return k;
+    return s + k;
+  }
+
+  tapKey(k) {
+    const t = this.state.keypadTarget;
+    if (t === 'total') this.setState(st => ({ amountStr: this.applyKey(st.amountStr, k) }));
+    else this.setState(st => ({ items: st.items.map(it => it.id === t ? { ...it, amountStr: this.applyKey(it.amountStr, k) } : it) }));
+  }
+
+  toggleKeypad(target) {
+    this.setState(st => (st.keypadUp && st.keypadTarget === target)
+      ? { keypadUp: false }
+      : { keypadUp: true, keypadTarget: target });
+  }
+
+  openPicker(target) {
+    const st = this.state;
+    const cur = target === 'split' ? st.selected : ((st.items.find(i => i.id === target) || {}).people || []);
+    this.setState({ pickerOpen: true, pickerTarget: target, pickerSel: cur.slice(), search: '' });
+  }
+
+  donePicker() {
+    this.setState(st => {
+      const patch = { pickerOpen: false };
+      if (st.pickerSel.length) {
+        if (st.pickerTarget === 'split') patch.selected = st.pickerSel.slice();
+        else patch.items = st.items.map(it => it.id === st.pickerTarget ? { ...it, people: st.pickerSel.slice() } : it);
+      }
+      return patch;
+    });
+  }
+
+  renderVals() {
+    const st = this.state;
+    const accent = this.props.accentTarget || 'save';
+    const kpDoto = this.props.keypadDoto !== false && this.props.keypadDoto !== 'false';
+    const SYM = { EUR: '€', USD: '$', GBP: '£' };
+    const sym = SYM[st.currency];
+    const total = this.total();
+    const isum = this.itemsSum();
+    const rest = total - isum;
+    const checksOut = isum <= total + 0.004;
+    const byId = id => st.people.find(p => p.id === id) || { name: '?' };
+    const letter = id => byId(id).name.charAt(0).toUpperCase();
+    const recIds = st.people.filter(p => p.group === 'rec').map(p => p.id);
+    const allRec = st.selected.length === recIds.length && recIds.every(id => st.selected.includes(id));
+    const restShare = st.selected.length ? Math.max(rest, 0) / st.selected.length : 0;
+
+    // per-person breakdown
+    const perPeople = [];
+    st.people.forEach(p => {
+      const parts = [];
+      let amt = 0;
+      if (st.selected.includes(p.id) && st.sliced) { parts.push('rest ' + this.trimN(restShare)); amt += restShare; }
+      st.items.forEach(it => {
+        if (it.people.includes(p.id) && it.people.length) {
+          const share = this.itemAmt(it) / it.people.length;
+          parts.push(it.name.toLowerCase() + ' ' + this.trimN(share));
+          amt += share;
+        }
+      });
+      if (parts.length) perPeople.push({ letter: p.name.charAt(0).toUpperCase(), name: p.name, breakdown: parts.join(' + '), amt: this.fmt2(amt) });
+    });
+
+    // picker groups
+    const q = st.search.trim().toLowerCase();
+    const groups = [['rec', 'IN THIS RECORDING'], ['recent', 'RECENTLY USED'], ['else', 'EVERYONE ELSE']]
+      .map(([g, label]) => ({
+        label,
+        people: st.people
+          .filter(p => p.group === g && (!q || p.name.toLowerCase().includes(q)))
+          .map(p => {
+            const sel = st.pickerSel.includes(p.id);
+            return {
+              key: p.id,
+              letter: p.name.charAt(0).toUpperCase(),
+              name: p.name,
+              circBg: sel ? '#1D1B16' : '#F3F0E9',
+              circFg: sel ? '#FCFAF5' : '#8E887A',
+              circBorder: sel ? '#1D1B16' : '#E4E0D3',
+              badgeBg: accent === 'picker' ? '#E8622A' : '#1D1B16',
+              badgeOp: sel ? 1 : 0,
+              badgeScale: sel ? 1 : 0.4,
+              tap: () => this.setState(s2 => ({ pickerSel: s2.pickerSel.includes(p.id) ? s2.pickerSel.filter(x => x !== p.id) : [...s2.pickerSel, p.id] }))
+            };
+          })
+      }))
+      .filter(g => g.people.length);
+
+    const createNameRaw = st.search.trim();
+    const showCreate = !!q && !st.people.some(p => p.name.toLowerCase() === q);
+    const createName = createNameRaw.charAt(0).toUpperCase() + createNameRaw.slice(1);
+
+    const editingItem = st.items.find(it => it.id === st.keypadTarget);
+    const keyDefs = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '⌫'];
+    const phaseLabels = { fresh: 'fresh open', sliced: 'sliced', picker: 'people picker', currency: 'currency revealed' };
+
+    return {
+      noop: () => {},
+      phaseLabel: phaseLabels[st.phase] || st.phase,
+      accentSave: accent !== 'picker',
+      accentPicker: accent === 'picker',
+
+      sym,
+      currency: st.currency,
+      bigAmount: this.fmtBig(st.amountStr),
+      bigColor: st.amountStr ? '#1D1B16' : '#C0BAAA',
+      onAmountTap: () => this.toggleKeypad('total'),
+      onCurrencyTap: (e) => { e.stopPropagation(); this.setState(s2 => ({ currencyOpen: !s2.currencyOpen })); },
+
+      curRows: st.currencyOpen ? '1fr' : '0fr',
+      segs: ['EUR', 'USD', 'GBP'].map(c => ({
+        code: c,
+        tap: () => this.setState({ currency: c, rate: c === 'USD' ? '0.92' : c === 'GBP' ? '1.17' : '1.00' }),
+        bg: c === st.currency ? '#1D1B16' : 'transparent',
+        fg: c === st.currency ? '#FCFAF5' : '#8E887A'
+      })),
+      showRate: st.currency !== 'EUR',
+      rate: st.rate,
+      onRate: (e) => this.setState({ rate: e.target.value.replace(/[^0-9.]/g, '') }),
+      approxAmt: this.fmt2(total * (parseFloat(st.rate) || 0)),
+
+      onSplitRowTap: () => this.openPicker('split'),
+      splitAvs: st.selected.map(id => ({ letter: letter(id) })),
+      splitLabel: allRec ? 'EVERYONE' : this.padN(st.selected.length) + ' PEOPLE',
+
+      btnRows: st.sliced ? '0fr' : '1fr',
+      secRows: st.sliced ? '1fr' : '0fr',
+      onSplitItUp: () => this.setState({ sliced: true, keypadUp: false }),
+
+      peopleCountLabel: this.padN(st.selected.length) + ' PEOPLE',
+      restAmt: this.fmt2(Math.max(rest, 0)),
+      items: st.items.map(it => ({
+        key: it.id,
+        name: it.name,
+        amt: this.fmt2(this.itemAmt(it)),
+        metaLine: it.people.length + (it.people.length === 1 ? ' person in' : ' people in'),
+        avs: it.people.map(id => ({ letter: letter(id) })),
+        amtBorder: (st.keypadUp && st.keypadTarget === it.id) ? '1px solid #1D1B16' : '1px solid transparent',
+        tapAmt: () => this.toggleKeypad(it.id),
+        tapWho: () => this.openPicker(it.id)
+      })),
+      onAddItem: () => this.setState(s2 => {
+        const n = s2.itemN + 1;
+        const id = 'item' + n + '_' + Date.now();
+        return {
+          itemN: n,
+          items: [...s2.items, { id, name: 'Item ' + this.padN(n + 1), amountStr: '', people: s2.selected.slice() }],
+          keypadUp: true,
+          keypadTarget: id
+        };
+      }),
+
+      aBg: checksOut ? 'transparent' : '#1D1B16',
+      aBorder: checksOut ? '#E4E0D3' : '#1D1B16',
+      aFg: checksOut ? '#1D1B16' : '#FCFAF5',
+      aMut: checksOut ? '#8E887A' : 'rgba(252,250,245,0.6)',
+      aGlyphBorder: checksOut ? '#C9C3B3' : 'rgba(252,250,245,0.45)',
+      anchorLegend: checksOut ? 'CHECKS OUT' : 'OFF BY',
+      anchorGlyph: checksOut ? '✓' : '!',
+      anchorAmt: this.fmt2(checksOut ? total : isum - total),
+      perPeople,
+
+      kpY: st.keypadUp ? 'translateY(0px)' : 'translateY(110%)',
+      padBottom: st.keypadUp ? 300 : 30,
+      kpLabel: 'AMOUNT · ' + (st.keypadTarget === 'total' ? 'TOTAL' : (editingItem ? editingItem.name.toUpperCase() : 'TOTAL')),
+      keys: keyDefs.map((k, i) => ({
+        k,
+        tap: () => this.tapKey(k),
+        bl: i % 3 === 0 ? 'none' : '1px solid #E4E0D3',
+        font: k === '⌫'
+          ? "400 17px 'Instrument Sans', sans-serif"
+          : k === '.'
+            ? "600 20px 'Instrument Sans', sans-serif"
+            : kpDoto
+              ? "800 21px 'Doto', monospace"
+              : "500 22px 'Instrument Sans', sans-serif",
+        color: k === '⌫' ? '#8E887A' : '#1D1B16'
+      })),
+
+      scrimPe: st.pickerOpen ? 'auto' : 'none',
+      scrimOp: st.pickerOpen ? 1 : 0,
+      sheetY: st.pickerOpen ? 'translateY(0px)' : 'translateY(105%)',
+      onScrim: () => this.donePicker(),
+      onDone: () => this.donePicker(),
+      selCountLabel: this.padN(st.pickerSel.length) + ' SELECTED',
+      search: st.search,
+      onSearch: (e) => this.setState({ search: e.target.value }),
+      showCreate,
+      createName,
+      onCreate: () => {
+        const name = createName;
+        if (!name) return;
+        const id = 'p' + Date.now();
+        this.setState(s2 => ({
+          people: [...s2.people, { id, name, group: 'else' }],
+          pickerSel: [...s2.pickerSel, id],
+          search: ''
+        }));
+      },
+      chipEveryone: () => this.setState({ pickerSel: recIds.slice() }),
+      chipLast: () => this.setState({ pickerSel: ['you', 'ana', 'rui'] }),
+      groups
+    };
+  }
+}
+</script>
+</body>
+</html>

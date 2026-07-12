@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500&family=Doto:wght@600..900&display=swap" rel="stylesheet">
+  <style>
+    body { margin: 0; background: #E7E4DD; font-family: 'Instrument Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+    a { color: #1D1B16; }
+    a:hover { color: #E8622A; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+    @keyframes ignite { from { transform: scale(0); } to { transform: scale(1); } }
+    @keyframes fileIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes popIn { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+    @keyframes sheetIn { from { transform: translateY(28px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  </style>
+</helmet>
+
+<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;gap:20px;padding:56px 32px 80px 32px;box-sizing:border-box">
+
+  <div data-screen-label="Home final" style="position:relative;width:390px;height:932px;background:#F3F0E9;border:1px solid #D9D5CA;border-radius:28px;overflow:hidden;display:flex;flex-direction:column;color:#1D1B16;flex:none">
+
+    <!-- header -->
+    <div style="padding:26px 24px 16px 24px;border-bottom:1px solid #E4E0D3;display:flex;align-items:center;justify-content:space-between;flex:none">
+      <div style="font-size:22px;font-weight:600;letter-spacing:-0.01em">Papaya</div>
+      <div onClick="{{ onGear }}" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:50%;transition:background 120ms ease" style-active="background:#ECE8DC">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8E887A" stroke-width="1.6" stroke-linecap="round">
+          <circle cx="12" cy="12" r="3.2"></circle>
+          <path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M18.5 5.5l-2.1 2.1M7.6 16.4l-2.1 2.1"></path>
+        </svg>
+      </div>
+    </div>
+
+    <!-- helper line -->
+    <sc-if value="{{ showHelper }}" hint-placeholder-val="{{ true }}">
+      <div style="padding:12px 24px;border-bottom:1px solid #E4E0D3;font-family:'IBM Plex Mono',monospace;font-size:10.5px;line-height:1.7;color:#A39D8D;flex:none">tap = open/close · REC = live session · one live at a time</div>
+    </sc-if>
+
+    <!-- feed -->
+    <div style="flex:1;overflow-y:auto;padding:20px 20px 120px 20px;display:flex;flex-direction:column;gap:12px">
+      <sc-for list="{{ items }}" as="item" hint-placeholder-count="6">
+
+        <!-- ===== recording card ===== -->
+        <sc-if value="{{ item.isRec }}">
+          <div style="background:#FCFAF5;border:1px solid #E4E0D3;border-radius:18px;flex:none;overflow:hidden">
+            <div onClick="{{ item.onHeader }}" style="cursor:pointer;height:66px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;transition:background 120ms ease" style-active="background:#F6F3EB">
+              <span style="display:flex;align-items:center;gap:9px;min-width:0">
+                <sc-if value="{{ item.live }}">
+                  <span style="width:7px;height:7px;border-radius:50%;background:{{ item.accent }};flex:none;animation:ignite 180ms cubic-bezier(0.2,0,0,1), pulse 2.4s 300ms infinite"></span>
+                </sc-if>
+                <span style="font-size:17px;font-weight:600;letter-spacing:-0.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ item.name }}</span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#C0BAAA;flex:none">{{ item.count }}</span>
+              </span>
+              <span style="display:flex;align-items:center;gap:9px;flex:none">
+                <span style="font-size:9.5px;font-weight:600;letter-spacing:0.16em;text-transform:uppercase;color:#8E887A">Rec</span>
+                <span onClick="{{ item.onRec }}" style="display:flex;align-items:center;width:48px;height:27px;border:1px solid #E4E0D3;border-radius:14px;background:#F3F0E9;padding:0 3px;cursor:pointer">
+                  <span style="width:20px;height:20px;border-radius:50%;background:{{ item.knobBg }};transform:translateX({{ item.knobX }});transition:transform 170ms cubic-bezier(0.2,0,0,1), background 170ms ease"></span>
+                </span>
+              </span>
+            </div>
+            <div style="display:grid;grid-template-rows:{{ item.gridRows }};transition:grid-template-rows 260ms cubic-bezier(0.2,0,0,1)">
+              <div style="overflow:hidden;min-height:0">
+                <div style="padding:0 18px 14px 18px">
+                  <div style="display:flex;align-items:center;gap:8px;padding:2px 0 6px 0">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#A39D8D">{{ item.dates }}</span>
+                    <sc-if value="{{ item.live }}">
+                      <span style="color:#C6C0B1;font-size:10px">·</span>
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:0.14em;text-transform:uppercase;color:#A39D8D">recording</span>
+                    </sc-if>
+                  </div>
+                  <sc-for list="{{ item.logs }}" as="log" hint-placeholder-count="2">
+                    <div onClick="{{ log.onTap }}" style="display:flex;align-items:center;gap:10px;height:44px;cursor:pointer;border-radius:8px;animation:{{ log.anim }};transition:background 120ms ease" style-active="background:#F6F3EB">
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#C0BAAA;flex:none">{{ log.idx }}</span>
+                      <span style="font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ log.name }}</span>
+                      <span style="flex:1;border-top:1px solid #EDE9DD;min-width:12px;margin-top:2px"></span>
+                      <span style="display:flex;align-items:baseline;gap:2px;white-space:nowrap;flex:none">
+                        <span style="font-size:12px;color:#8E887A">₩</span>
+                        <span style="font-family:'Doto',monospace;font-weight:800;font-size:16.5px;letter-spacing:0.02em">{{ log.num }}</span>
+                      </span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- ===== loose expense (bare + hairline) ===== -->
+        <sc-if value="{{ item.isExp }}">
+          <div style="flex:none">
+            <div onClick="{{ item.onHeader }}" style="display:flex;align-items:center;gap:12px;height:44px;padding:0 10px;cursor:pointer;border-radius:10px;transition:background 120ms ease" style-active="background:#ECE8DC">
+              <span style="font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ item.name }}</span>
+              <span style="flex:1;border-top:1px solid #E7E2D5;min-width:16px;margin-top:2px"></span>
+              <span style="display:flex;align-items:baseline;gap:2px;white-space:nowrap;flex:none">
+                <span style="font-size:12px;color:#8E887A">₩</span>
+                <span style="font-family:'Doto',monospace;font-weight:800;font-size:16.5px;letter-spacing:0.02em">{{ item.num }}</span>
+              </span>
+            </div>
+            <div style="display:grid;grid-template-rows:{{ item.gridRows }};transition:grid-template-rows 260ms cubic-bezier(0.2,0,0,1)">
+              <div style="overflow:hidden;min-height:0">
+                <div style="padding:6px 10px 10px 10px;display:flex;align-items:center;gap:16px">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#A39D8D">{{ item.meta }}</span>
+                  <span onClick="{{ item.onDetail }}" style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:0.12em;text-transform:uppercase;color:#1D1B16;cursor:pointer;border-bottom:1px solid #C9C3B3;padding-bottom:1px">Open detail →</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+      </sc-for>
+    </div>
+
+    <!-- FAB -->
+    <div onClick="{{ onFab }}" style="position:absolute;right:20px;bottom:86px;width:56px;height:56px;border-radius:50%;background:#1D1B16;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:transform 110ms cubic-bezier(0.2,0,0,1);z-index:5" style-active="transform:scale(0.9)">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="#F3F0E9" stroke-width="1.8" stroke-linecap="round"><path d="M10 3.5v13M3.5 10h13"></path></svg>
+    </div>
+
+    <!-- bottom nav -->
+    <div style="height:64px;border-top:1px solid #E4E0D3;display:grid;grid-template-columns:1fr 1fr 1fr;background:#F3F0E9;flex:none;position:relative;z-index:5">
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px">
+        <span style="font-size:14px;font-weight:600;color:#1D1B16">home</span>
+        <span style="width:16px;height:2px;background:#1D1B16;border-radius:1px"></span>
+      </div>
+      <div onClick="{{ onRecords }}" style="display:flex;align-items:center;justify-content:center;cursor:pointer" style-active="opacity:0.55"><span style="font-size:14px;color:#A39D8D">records</span></div>
+      <div onClick="{{ onSettle }}" style="display:flex;align-items:center;justify-content:center;cursor:pointer" style-active="opacity:0.55"><span style="font-size:14px;color:#A39D8D">settlement</span></div>
+    </div>
+
+    <!-- confirm dialog -->
+    <sc-if value="{{ confirmOpen }}">
+      <div onClick="{{ onCancel }}" style="position:absolute;inset:0;background:rgba(29,27,22,0.28);display:flex;align-items:center;justify-content:center;padding:32px;animation:fadeIn 140ms ease;z-index:20">
+        <div onClick="{{ stopIt }}" style="background:#FCFAF5;border:1px solid #E4E0D3;border-radius:18px;padding:22px 20px;width:100%;animation:popIn 160ms cubic-bezier(0.2,0,0,1)">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:0.16em;text-transform:uppercase;color:#8E887A">Switch live session?</div>
+          <div style="margin:12px 0 6px 0;font-size:16px;font-weight:600;letter-spacing:-0.01em">{{ confirmFrom }} → {{ confirmTo }}</div>
+          <div style="font-size:12.5px;color:#8E887A;line-height:1.55">New expenses will start filing into {{ confirmTo }}.</div>
+          <div style="display:flex;gap:10px;margin-top:20px">
+            <div onClick="{{ onCancel }}" style="flex:1;height:40px;border:1px solid #E4E0D3;border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;cursor:pointer;transition:background 120ms ease" style-active="background:#F6F3EB">Cancel</div>
+            <div onClick="{{ onConfirm }}" style="flex:1;height:40px;background:#1D1B16;color:#F3F0E9;border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;cursor:pointer;transition:opacity 120ms ease" style-active="opacity:0.8">Switch</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- stub sheet -->
+    <sc-if value="{{ stubOpen }}">
+      <div onClick="{{ onStubClose }}" style="position:absolute;inset:0;background:rgba(29,27,22,0.2);z-index:20;animation:fadeIn 140ms ease">
+        <div onClick="{{ stopIt }}" style="position:absolute;left:0;right:0;bottom:0;background:#FCFAF5;border-top:1px solid #E4E0D3;border-radius:22px 22px 0 0;padding:20px 24px 28px 24px;animation:sheetIn 240ms cubic-bezier(0.2,0,0,1)">
+          <div style="width:36px;height:3px;border-radius:2px;background:#DCD6C6;margin:0 auto 18px auto"></div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:0.16em;text-transform:uppercase;color:#A39D8D">stub</div>
+          <div style="font-size:18px;font-weight:600;margin-top:6px;letter-spacing:-0.01em">{{ stubTitle }}</div>
+          <div style="font-size:12.5px;color:#8E887A;margin-top:6px;line-height:1.55">Not part of this prototype yet.</div>
+          <div onClick="{{ onStubClose }}" style="height:40px;border:1px solid #E4E0D3;border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;cursor:pointer;margin-top:20px;transition:background 120ms ease" style-active="background:#F6F3EB">Close</div>
+        </div>
+      </div>
+    </sc-if>
+
+  </div>
+
+  <!-- demo trigger -->
+  <div onClick="{{ onDemo }}" style="display:flex;align-items:center;gap:8px;height:36px;padding:0 18px;border:1px solid #C9C4B7;border-radius:18px;cursor:pointer;background:#F3F0E9;transition:background 120ms ease;flex:none" style-active="background:#ECE8DC">
+    <span style="width:6px;height:6px;border-radius:50%;background:#E8622A"></span>
+    <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:0.1em;text-transform:uppercase;color:#1D1B16">demo · log expense to live</span>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: 520, &quot;height&quot;: 1090 },
+  &quot;accent&quot;: { &quot;editor&quot;: &quot;color&quot;, &quot;default&quot;: &quot;#E8622A&quot;, &quot;options&quot;: [&quot;#E8622A&quot;, &quot;#D6521F&quot;, &quot;#BF4E1E&quot;, &quot;#1D1B16&quot;], &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Color&quot; },
+  &quot;showHelper&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Layout&quot; }
+}">
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.FEED = [
+      { kind: 'rec', id: 'seoul', name: 'Seoul in june', dates: 'Jun 3–7', logs: [
+        { name: 'Hongdae BBQ', num: '64,000' },
+        { name: 'Namsan cable car', num: '33,000' },
+        { name: 'Guesthouse · night 1', num: '120,000' } ] },
+      { kind: 'exp', id: 'taxi', name: 'Airport taxi', num: '18,000', meta: 'paid by You · Jun 8' },
+      { kind: 'exp', id: 'tteok', name: 'Late-night tteokbokki', num: '12,000', meta: 'paid by Mina · Jun 8' },
+      { kind: 'rec', id: 'busan', name: 'Busan weekend', dates: 'May 24–25', logs: [
+        { name: 'KTX tickets', num: '118,000' },
+        { name: 'Raw fish market', num: '52,000' } ] },
+      { kind: 'rec', id: 'lunch', name: 'Office lunch club', dates: 'recurring', logs: [
+        { name: 'Kimchi jjigae', num: '36,000' },
+        { name: 'Pho day', num: '42,500' } ] },
+      { kind: 'rec', id: 'jeju', name: 'Jeju hikers', dates: 'Apr 12–14', logs: [
+        { name: 'Rental car', num: '96,000' } ] },
+      { kind: 'exp', id: 'coffee', name: 'Coffee run', num: '9,500', meta: 'paid by You · Jun 9' }
+    ];
+    this.DEMO_POOL = [
+      { name: 'Conbini snacks', num: '6,800' },
+      { name: 'Subway card top-up', num: '5,500' },
+      { name: 'Hotteok stand', num: '4,000' },
+      { name: 'Noraebang hour', num: '25,000' }
+    ];
+    this.state = { expanded: 'seoul', live: 'seoul', confirm: null, stub: null, extra: {}, newKey: null, demoIdx: 0 };
+  }
+
+  demo() {
+    const st = this.state;
+    if (!st.live) { this.setState({ stub: 'No live session' }); return; }
+    const base = this.DEMO_POOL[st.demoIdx % this.DEMO_POOL.length];
+    const item = { ...base, uid: 'u' + Date.now() };
+    const extra = { ...st.extra, [st.live]: [...(st.extra[st.live] || []), item] };
+    this.setState({ extra, expanded: st.live, newKey: item.uid, demoIdx: st.demoIdx + 1 });
+    clearTimeout(this._t);
+    this._t = setTimeout(() => this.setState({ newKey: null }), 700);
+  }
+
+  renderVals() {
+    const st = this.state;
+    const acc = this.props.accent ?? '#E8622A';
+
+    const items = this.FEED.map(f => {
+      if (f.kind === 'rec') {
+        const logs = [...f.logs, ...(st.extra[f.id] || [])];
+        const live = st.live === f.id;
+        const expanded = st.expanded === f.id;
+        return {
+          isRec: true, isExp: false, key: f.id,
+          name: f.name, dates: f.dates, live, accent: acc,
+          count: String(logs.length).padStart(2, '0'),
+          gridRows: expanded ? '1fr' : '0fr',
+          knobBg: live ? acc : '#D8D3C5',
+          knobX: live ? '20px' : '0px',
+          logs: logs.map((l, i) => ({
+            key: f.id + i,
+            idx: String(i + 1).padStart(2, '0'),
+            name: l.name, num: l.num,
+            anim: (l.uid && st.newKey === l.uid) ? 'fileIn 280ms cubic-bezier(0.2,0,0,1)' : 'none',
+            onTap: (e) => { e.stopPropagation(); this.setState({ stub: 'Expense detail' }); }
+          })),
+          onHeader: () => this.setState({ expanded: expanded ? null : f.id }),
+          onRec: (e) => {
+            e.stopPropagation();
+            if (st.live === f.id) this.setState({ live: null });
+            else if (st.live) {
+              const from = this.FEED.find(x => x.id === st.live);
+              this.setState({ confirm: { from: from ? from.name : '', to: f.name, toId: f.id } });
+            } else this.setState({ live: f.id });
+          }
+        };
+      }
+      const expanded = st.expanded === f.id;
+      return {
+        isRec: false, isExp: true, key: f.id,
+        name: f.name, num: f.num, meta: f.meta,
+        gridRows: expanded ? '1fr' : '0fr',
+        onHeader: () => this.setState({ expanded: expanded ? null : f.id }),
+        onDetail: (e) => { e.stopPropagation(); this.setState({ stub: 'Expense detail' }); }
+      };
+    });
+
+    return {
+      items,
+      showHelper: this.props.showHelper ?? true,
+      stopIt: (e) => e.stopPropagation(),
+      confirmOpen: !!st.confirm,
+      confirmFrom: st.confirm ? st.confirm.from : '',
+      confirmTo: st.confirm ? st.confirm.to : '',
+      onConfirm: () => this.setState({ live: st.confirm.toId, confirm: null }),
+      onCancel: () => this.setState({ confirm: null }),
+      stubOpen: !!st.stub,
+      stubTitle: st.stub || '',
+      onStubClose: () => this.setState({ stub: null }),
+      onFab: () => this.setState({ stub: 'New expense' }),
+      onGear: () => this.setState({ stub: 'Settings' }),
+      onRecords: () => this.setState({ stub: 'Records' }),
+      onSettle: () => this.setState({ stub: 'Settlement' }),
+      onDemo: () => this.demo()
+    };
+  }
+}
+</script>
+</body>
+</html>

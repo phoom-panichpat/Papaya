@@ -1,0 +1,80 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=Doto:wght@600;700;800;900&display=swap');
+
+/* ── Papaya design tokens (from TOKENS.md) ────────────────────────────── */
+:root {
+  /* color */
+  --bg: #F3F0E9;
+  --surface: #FCFAF5;
+  --surface-press: #F6F3EB;
+  --bg-press: #ECE8DC;
+  --text: #1D1B16;
+  --text-2: #8E887A;
+  --text-3: #A39D8D;
+  --text-4: #C0BAAA;
+  --hairline: #E4E0D3;
+  --hairline-2: #E7E2D5;
+  --hairline-3: #EDE9DD;
+  --frame: #D9D5CA;
+  --knob-off: #D8D3C5;
+  --accent: #E8622A;
+  --scrim: rgba(29, 27, 22, 0.28);
+  --scrim-sheet: rgba(29, 27, 22, 0.20);
+
+  /* type families */
+  --font-grotesque: 'Instrument Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-money: 'Doto', 'IBM Plex Mono', monospace;
+
+  /* radii */
+  --r-card: 18px;
+  --r-sheet: 22px;
+  --r-device: 28px;
+  --r-toggle: 14px;
+
+  /* motion */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ── reset ────────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+
+body {
+  background: var(--frame);
+  color: var(--text);
+  font-family: var(--font-grotesque);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  max-width: 430px;
+  margin: 0 auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--bg);
+  position: relative;
+  overflow: hidden;
+}
+
+button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+input, textarea, select { font-family: inherit; color: var(--text); }
+input::placeholder, textarea::placeholder { color: var(--text-3); }
+::-webkit-scrollbar { width: 0; height: 0; }
+
+/* ── shared helpers ───────────────────────────────────────────────────── */
+.money { font-family: var(--font-money); font-weight: 800; letter-spacing: 0.02em; }
+.mono { font-family: var(--font-mono); }
+.legend {
+  font-family: var(--font-mono);
+  font-size: 9.5px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--text-2);
+}
+
+/* ── motion keyframes ─────────────────────────────────────────────────── */
+@keyframes pulse   { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes fadeIn  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes popIn   { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+@keyframes sheetIn { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fileIn  { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }

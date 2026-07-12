@@ -1,0 +1,11 @@
+node_modules
+dist
+.env
+.env.local
+.DS_Store
+*.log
+
+# raw design-tool exports (key deliverables live in design/)
+Expense Form Design System/
+Papaya home screen restyle/
+style-refs/
