@@ -11,11 +11,19 @@ import { supabase } from "./supabase";
 
 export {
   toHome, buildContributions, pairNet, netByPerson, minimizeTransfers, directTransfers, statusForExpense,
-  buildAliasMap, resolveAlias,
+  buildAliasMap, resolveAlias, patchContribsSettled,
 } from "./balances-core.mjs";
 
 // ── load everything the money layer needs ────────────────────────────────
-export async function loadSettlementData() {
+// Global scope (no arg) pulls all six tables for the app-wide picture
+// (Settlement / PersonDetail). Pass a `recordingId` to load ONLY that record's
+// expense→item→member tree (one embedded, indexed round-trip) — enough for
+// RecordSettleSheet, which only ever nets one record. Scoped loads still fetch
+// full `people` (small; needed for alias resolution) and the record itself (so
+// toHome can apply its base/home exchange rates), and skip the settlements
+// ledger, which the money math never reads.
+export async function loadSettlementData(recordingId) {
+  if (recordingId) return loadRecordScoped(recordingId);
   const [exp, items, mem, setl, recs, ppl] = await Promise.all([
     supabase.from("expenses").select("*"),
     supabase.from("expense_items").select("*"),
@@ -34,6 +42,37 @@ export async function loadSettlementData() {
   };
 }
 
+// One record's tree in a single PostgREST-embedded query, then flattened back
+// into the {expenses, items, members} shape buildContributions expects.
+async function loadRecordScoped(recordingId) {
+  const [tree, recRes, pplRes] = await Promise.all([
+    supabase
+      .from("expenses")
+      .select("*, expense_items(*, expense_item_members(*))")
+      .eq("recording_id", recordingId),
+    supabase.from("recordings").select("*").eq("id", recordingId),
+    supabase.from("people").select("*"),
+  ]);
+  const expenses = [], items = [], members = [];
+  (tree.data || []).forEach((row) => {
+    const { expense_items, ...exp } = row;
+    expenses.push(exp);
+    (expense_items || []).forEach((it) => {
+      const { expense_item_members, ...item } = it;
+      items.push(item);
+      (expense_item_members || []).forEach((m) => members.push(m));
+    });
+  });
+  return {
+    expenses,
+    items,
+    members,
+    settlements: [], // not read by the money math; unused in the record sheet
+    recordings: recRes.data || [],
+    people: pplRes.data || [],
+  };
+}
+
 // ── person merge (alias) — non-destructive & reversible ───────────────────
 // Point `personId` at `targetId` (a token → its real account). Balances
 // resolve through the pointer, so all of the token's past splits follow the
@@ -49,22 +88,29 @@ export async function unmergePerson(personId) {
 // ── mutations ────────────────────────────────────────────────────────────
 // Settle / un-settle specific (item, person) shares. settled_at is the
 // single source of truth for outstanding balances.
-export async function settleShares(rows) {
-  const now = new Date().toISOString();
-  await Promise.all(rows.map((r) =>
+// `at` is optional: optimistic callers pin the timestamp themselves so the
+// local patch and the DB row carry the SAME settled_at (History groups by it).
+// Throws on a failed write so optimistic UIs can re-sync instead of lying.
+export async function settleShares(rows, at) {
+  const now = at || new Date().toISOString();
+  const results = await Promise.all(rows.map((r) =>
     supabase.from("expense_item_members")
       .update({ settled_at: now })
       .eq("item_id", r.itemId).eq("person_id", r.personId)
   ));
+  const bad = results.find((r) => r.error);
+  if (bad) throw bad.error;
   return now;
 }
 
 export async function unsettleShares(rows) {
-  await Promise.all(rows.map((r) =>
+  const results = await Promise.all(rows.map((r) =>
     supabase.from("expense_item_members")
       .update({ settled_at: null })
       .eq("item_id", r.itemId).eq("person_id", r.personId)
   ));
+  const bad = results.find((r) => r.error);
+  if (bad) throw bad.error;
 }
 
 // Record a payment in the history ledger. Returns the new row's id (for Undo).

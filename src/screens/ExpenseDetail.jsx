@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol, formatMoney } from "../lib/format";
 import { settleShares, unsettleShares, toHome, buildAliasMap, resolveAlias } from "../lib/balances";
 import DualMoney from "../components/DualMoney";
+import SaveError from "../components/SaveError";
 
 function fullDate(d) {
   return new Date(d).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
@@ -24,8 +25,10 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, refr
   const [home, setHome] = useState("THB");
   const [loading, setLoading] = useState(true);
   const [confirmDel, setConfirmDel] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(false);          // delete/archive only — settle toggles are optimistic
   const [dirty, setDirty] = useState(false);        // signal underlying refresh on close
+  const [saveErr, setSaveErr] = useState(false);
+  const chain = useRef(Promise.resolve());          // serializes background settle writes
 
   const aliasMap = useMemo(() => buildAliasMap(people), [people]);
   const canon = (id) => resolveAlias(id, aliasMap);
@@ -97,14 +100,25 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, refr
 
   // direct toggle: tap an open person → settled, tap a settled person → open.
   // Reversibility-in-place is the misclick guard (tap again to reverse).
-  async function togglePerson(p) {
-    if (busy) return;
-    setBusy(true);
-    if (p.settled) await unsettleShares(p.allShares);
-    else await settleShares(p.allShares);
+  // Optimistic: flip the local rows instantly, write in the background; on a
+  // failed write re-sync from the server and say so.
+  function togglePerson(p) {
+    const at = p.settled ? null : new Date().toISOString();
+    setMembersByItem((prev) => {
+      const next = {};
+      Object.entries(prev).forEach(([itemId, rows]) => {
+        next[itemId] = rows.map((m) =>
+          p.allShares.some((s) => s.itemId === itemId && s.personId === m.person_id)
+            ? { ...m, settled_at: at }
+            : m
+        );
+      });
+      return next;
+    });
     setDirty(true);
-    setBusy(false);
-    await load();
+    chain.current = chain.current
+      .then(() => (p.settled ? unsettleShares(p.allShares) : settleShares(p.allShares, at)))
+      .catch(() => { setSaveErr(true); return load().catch(() => {}); });
   }
 
   async function del() {
@@ -272,6 +286,8 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, refr
           </div>
         </div>
       )}
+
+      {saveErr && <SaveError onDone={() => setSaveErr(false)} />}
     </div>
   );
 }

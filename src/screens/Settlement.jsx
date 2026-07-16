@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol, padIndex } from "../lib/format";
 import DualMoney from "../components/DualMoney";
+import SaveError from "../components/SaveError";
 import {
   loadSettlementData, buildContributions, pairNet,
-  settleShares, unsettleShares, recordPayment, deletePayment,
+  settleShares, unsettleShares, patchContribsSettled,
 } from "../lib/balances";
 
 function money(n, cur) {
@@ -44,10 +45,11 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
   const [loading, setLoading] = useState(true);
   const [openPid, setOpenPid] = useState(null);
   const [openEvent, setOpenEvent] = useState(null);
-  const [snack, setSnack] = useState(null); // { shares, paymentIds }
-  const [bump, setBump] = useState(0);       // local refresh after settle
+  const [snack, setSnack] = useState(null); // { shares }
+  const [saveErr, setSaveErr] = useState(false);
   const [histSeg, setHistSeg] = useState("settled"); // settled | records | expenses
   const [histQ, setHistQ] = useState("");
+  const chain = useRef(Promise.resolve()); // serializes background writes
 
   const self = (people || []).find((p) => p.is_self);
   const person = useCallback((id) => (people || []).find((x) => x.id === id), [people]);
@@ -99,7 +101,16 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
     })();
   }, []);
 
-  useEffect(() => { load(); }, [load, refreshKey, bump]);
+  useEffect(() => { load(); }, [load, refreshKey]);
+
+  // Optimistic mutations (owned here so patch + write + failure re-sync live
+  // together): flip local contribs instantly, write in the background; on a
+  // failed write, reload the truth from the server and say so.
+  const background = useCallback((write) => {
+    chain.current = chain.current
+      .then(write)
+      .catch(() => { setSaveErr(true); return load().catch(() => {}); });
+  }, [load]);
 
   // net per other person, from You's perspective (positive = they owe you)
   const rows = self
@@ -113,18 +124,28 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
   const owedToYou = rows.filter((r) => r.net > 0).reduce((s, r) => s + r.net, 0);
   const youOwe = rows.filter((r) => r.net < 0).reduce((s, r) => s - r.net, 0);
 
-  function afterCommit(commit) {
-    setSnack(commit);
+  // PersonSettleSheet commit: `rows` = the original member rows to settle
+  function commitSettle(rows) {
+    const at = new Date().toISOString();
+    setContribs((cs) => patchContribsSettled(cs, rows, at));
+    setSnack({ shares: rows });
     setOpenPid(null);
-    setBump((n) => n + 1);
+    background(() => settleShares(rows, at));
   }
 
-  async function undo() {
+  // EventSheet un-settle: `rows` = the (possibly partial) member rows to reopen
+  function unsettleEvent(rows) {
+    setContribs((cs) => patchContribsSettled(cs, rows, null));
+    setOpenEvent(null);
+    background(() => unsettleShares(rows));
+  }
+
+  function undo() {
     if (!snack) return;
-    await unsettleShares(snack.shares);
-    for (const id of snack.paymentIds) await deletePayment(id);
+    const rows = snack.shares;
     setSnack(null);
-    setBump((n) => n + 1);
+    setContribs((cs) => patchContribsSettled(cs, rows, null));
+    background(() => unsettleShares(rows));
   }
 
   useEffect(() => {
@@ -320,7 +341,7 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
           home={home}
           nameOf={nameOf}
           onClose={() => setOpenPid(null)}
-          onCommitted={afterCommit}
+          onCommitted={commitSettle}
         />
       )}
 
@@ -332,9 +353,11 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
           home={home}
           nameOf={nameOf}
           onClose={() => setOpenEvent(null)}
-          onUnsettled={() => { setOpenEvent(null); setBump((n) => n + 1); }}
+          onUnsettle={unsettleEvent}
         />
       )}
+
+      {saveErr && <SaveError onDone={() => setSaveErr(false)} />}
 
       {/* undo snackbar */}
       {snack && (
@@ -357,7 +380,6 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
     )
   );
   const [ticked, setTicked] = useState(() => new Set());
-  const [busy, setBusy] = useState(false);
 
   function keyOf(c) { return `${c.itemId}:${c.personId}`; }
   function toggle(c) {
@@ -372,25 +394,9 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
   const tickedList = shares.filter((c) => ticked.has(keyOf(c)));
   const settlingNet = tickedList.reduce((sum, c) => sum + (c.creditor === self.id ? c.home : -c.home), 0);
 
-  async function commit() {
-    if (!tickedList.length || busy) return;
-    setBusy(true);
-    const rows = tickedList.flatMap((c) => c.settleKeys); // original member rows (merge-aware)
-    await settleShares(rows);
-    // history: one payment row per direction that has ticked shares
-    const paymentIds = [];
-    const theyToYou = tickedList.filter((c) => c.creditor === self.id).reduce((s, c) => s + c.home, 0);
-    const youToThem = tickedList.filter((c) => c.creditor === other.id).reduce((s, c) => s + c.home, 0);
-    if (theyToYou > 0.005) {
-      const id = await recordPayment({ ownerId: self.owner_id, from: other.id, to: self.id, amount: theyToYou });
-      if (id) paymentIds.push(id);
-    }
-    if (youToThem > 0.005) {
-      const id = await recordPayment({ ownerId: self.owner_id, from: self.id, to: other.id, amount: youToThem });
-      if (id) paymentIds.push(id);
-    }
-    setBusy(false);
-    onCommitted({ shares: rows, paymentIds });
+  function commit() {
+    if (!tickedList.length) return;
+    onCommitted(tickedList.flatMap((c) => c.settleKeys)); // original member rows (merge-aware)
   }
 
   return (
@@ -460,10 +466,10 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
               </div>
               <button
                 onClick={commit}
-                disabled={!tickedList.length || busy}
-                style={{ width: "100%", height: 48, borderRadius: 14, background: "var(--accent)", color: "#fff", fontSize: 15, fontWeight: 600, opacity: tickedList.length && !busy ? 1 : 0.4 }}
+                disabled={!tickedList.length}
+                style={{ width: "100%", height: 48, borderRadius: 14, background: "var(--accent)", color: "#fff", fontSize: 15, fontWeight: 600, opacity: tickedList.length ? 1 : 0.4 }}
               >
-                {busy ? "…" : `Mark ${tickedList.length} settled`}
+                {`Mark ${tickedList.length} settled`}
               </button>
             </div>
           </>
@@ -474,8 +480,7 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
 }
 
 // ── settled-event detail: the shares behind one settlement, + partial un-settle ──
-function EventSheet({ event, self, home, nameOf, onClose, onUnsettled }) {
-  const [busy, setBusy] = useState(false);
+function EventSheet({ event, self, home, nameOf, onClose, onUnsettle }) {
   function keyOf(c) { return `${c.itemId}:${c.personId}`; }
   const [ticked, setTicked] = useState(() => new Set(event.contribs.map(keyOf)));
   function toggle(c) {
@@ -491,12 +496,9 @@ function EventSheet({ event, self, home, nameOf, onClose, onUnsettled }) {
       ? `You paid ${nameOf(event.creditor)}`
       : `${nameOf(event.debtor)} paid ${nameOf(event.creditor)}`;
 
-  async function unsettle() {
-    if (!tickedContribs.length || busy) return;
-    setBusy(true);
-    await unsettleShares(tickedContribs.flatMap((c) => c.settleKeys)); // ORIGINAL member rows
-    setBusy(false);
-    onUnsettled();
+  function unsettle() {
+    if (!tickedContribs.length) return;
+    onUnsettle(tickedContribs.flatMap((c) => c.settleKeys)); // ORIGINAL member rows
   }
 
   return (
@@ -552,10 +554,10 @@ function EventSheet({ event, self, home, nameOf, onClose, onUnsettled }) {
           </div>
           <button
             onClick={unsettle}
-            disabled={!tickedContribs.length || busy}
-            style={{ width: "100%", height: 48, borderRadius: 14, background: "transparent", border: "1.5px solid var(--hairline)", color: "var(--text-2)", fontSize: 15, fontWeight: 600, opacity: tickedContribs.length && !busy ? 1 : 0.4 }}
+            disabled={!tickedContribs.length}
+            style={{ width: "100%", height: 48, borderRadius: 14, background: "transparent", border: "1.5px solid var(--hairline)", color: "var(--text-2)", fontSize: 15, fontWeight: 600, opacity: tickedContribs.length ? 1 : 0.4 }}
           >
-            {busy ? "…" : `Un-settle ${tickedContribs.length}`}
+            {`Un-settle ${tickedContribs.length}`}
           </button>
         </div>
       </div>

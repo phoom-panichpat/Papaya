@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol } from "../lib/format";
 import {
   loadSettlementData, buildContributions, toHome,
-  settleShares, unsettleShares,
+  settleShares, unsettleShares, patchContribsSettled,
 } from "../lib/balances";
 import DualMoney from "../components/DualMoney";
+import SaveError from "../components/SaveError";
 
 // Scoped settle for ONE record's party: direct pairwise "who owes who", each row
 // backed by real item shares. Rows toggle paid/unpaid in place (fade + strike),
@@ -15,9 +16,9 @@ export default function RecordSettleSheet({ recordingId, people, onClose }) {
   const [home, setHome] = useState("THB");
   const [contribs, setContribs] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [bump, setBump] = useState(0);
   const [confirmAll, setConfirmAll] = useState(false);
+  const [saveErr, setSaveErr] = useState(false);
+  const chain = useRef(Promise.resolve()); // serializes background writes
 
   const person = useCallback((id) => (people || []).find((x) => x.id === id), [people]);
   const nameOf = useCallback((id) => {
@@ -31,12 +32,20 @@ export default function RecordSettleSheet({ recordingId, people, onClose }) {
     setHome(hc);
     const { data: r } = await supabase.from("recordings").select("*").eq("id", recordingId).maybeSingle();
     setRec(r);
-    const data = await loadSettlementData();
+    const data = await loadSettlementData(recordingId); // scoped: only this record's tree
     setContribs(buildContributions(data, hc));
     setLoading(false);
   }, [recordingId]);
 
-  useEffect(() => { load(); }, [load, bump]);
+  useEffect(() => { load(); }, [load]);
+
+  // optimistic: flip local state instantly, write in the background; if a
+  // write fails, re-sync from the server and say so (never lie about saved).
+  const background = useCallback((write) => {
+    chain.current = chain.current
+      .then(write)
+      .catch(() => { setSaveErr(true); return load().catch(() => {}); });
+  }, [load]);
 
   const baseCur = rec?.base_currency || home;
   const dual = !!rec?.base_currency && rec.base_currency !== home;
@@ -65,24 +74,18 @@ export default function RecordSettleSheet({ recordingId, people, onClose }) {
 
   const anyUnpaid = transfers.some((t) => !t.paid);
 
-  async function toggle(t) {
-    if (busy) return;
-    setBusy(true);
-    const action = t.paid ? "open" : "settled";
-    if (t.paid) await unsettleShares(t.shares);
-    else await settleShares(t.shares);
-    setBusy(false);
-    setBump((n) => n + 1);
+  function toggle(t) {
+    const at = t.paid ? null : new Date().toISOString();
+    setContribs((cs) => patchContribsSettled(cs, t.shares, at));
+    background(() => (t.paid ? unsettleShares(t.shares) : settleShares(t.shares, at)));
   }
 
-  async function markAll() {
-    if (busy) return;
-    setBusy(true);
+  function markAll() {
     setConfirmAll(false);
     const all = transfers.filter((t) => !t.paid).flatMap((t) => t.shares);
-    await settleShares(all);
-    setBusy(false);
-    setBump((n) => n + 1);
+    const at = new Date().toISOString();
+    setContribs((cs) => patchContribsSettled(cs, all, at));
+    background(() => settleShares(all, at));
   }
 
   return (
@@ -116,7 +119,6 @@ export default function RecordSettleSheet({ recordingId, people, onClose }) {
                 <button
                   key={i}
                   onClick={() => toggle(t)}
-                  disabled={busy}
                   style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "13px 2px", borderBottom: "1px solid var(--hairline-3)", textAlign: "left", opacity: t.paid ? 0.5 : 1 }}
                 >
                   <span style={{ width: 22, height: 22, borderRadius: 7, border: t.paid ? "none" : "1.5px solid var(--hairline)", background: t.paid ? "var(--settled)" : "var(--bg)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flex: "none" }}>{t.paid ? "✓" : ""}</span>
@@ -143,7 +145,6 @@ export default function RecordSettleSheet({ recordingId, people, onClose }) {
               <div style={{ borderTop: "1px solid var(--hairline)", marginTop: 10, paddingTop: 14 }}>
                 <button
                   onClick={() => setConfirmAll(true)}
-                  disabled={busy}
                   style={{ width: "100%", height: 48, borderRadius: 14, background: "var(--accent)", color: "#fff", fontSize: 15, fontWeight: 600 }}
                 >
                   Mark all as paid
@@ -153,6 +154,8 @@ export default function RecordSettleSheet({ recordingId, people, onClose }) {
           </>
         )}
       </div>
+
+      {saveErr && <SaveError onDone={() => setSaveErr(false)} />}
 
       {/* mark-all confirm */}
       {confirmAll && (

@@ -100,6 +100,20 @@ export function buildContributions(data, homeCurrency) {
   return contribs;
 }
 
+// Optimistic local update: flip settled state on the contributions whose
+// settleKeys intersect `keys`, WITHOUT re-fetching. Every settle flow acts on
+// whole contributions (settleKeys sets are disjoint between contribs), so an
+// intersection means "this contribution was toggled". Pass an ISO timestamp
+// to settle (must match what the DB write stores) or null to un-settle.
+export function patchContribsSettled(contribs, keys, settledAt = null) {
+  const hit = new Set((keys || []).map((k) => `${k.itemId}:${k.personId}`));
+  return contribs.map((c) =>
+    c.settleKeys.some((k) => hit.has(`${k.itemId}:${k.personId}`))
+      ? { ...c, settled: !!settledAt, settledAt }
+      : c
+  );
+}
+
 // Net (home currency) between two people, from A's perspective:
 // positive => B owes A, negative => A owes B. Unsettled only.
 export function pairNet(contribs, aId, bId) {

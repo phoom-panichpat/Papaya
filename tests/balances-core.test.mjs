@@ -9,7 +9,7 @@
 import {
   toHome, buildContributions, pairNet, netByPerson,
   directTransfers, minimizeTransfers, statusForExpense,
-  buildAliasMap, resolveAlias,
+  buildAliasMap, resolveAlias, patchContribsSettled,
 } from "../src/lib/balances-core.mjs";
 
 let pass = 0, fail = 0;
@@ -221,6 +221,46 @@ const memberRow = (d, itemId, personId) =>
     ts.some((t) => t.from === "c" && t.to === "a" && approx(t.amount, 40)));
   check("minimizeTransfers: balanced input → no transfers",
     minimizeTransfers({ a: 0, b: 0.001 }).length === 0);
+}
+
+// ── patchContribsSettled: optimistic local flip, no re-fetch ─────────────
+{
+  const cs = buildContributions(makeData(), HOME);
+  const rui1 = cs.find((c) => c.itemId === "i1" && c.debtor === "rui");
+  const at = "2026-07-17T10:00:00Z";
+
+  const settled = patchContribsSettled(cs, rui1.settleKeys, at);
+  const hit = settled.find((c) => c.itemId === "i1" && c.debtor === "rui");
+  check("patch: settling flips only the matching contribution",
+    hit.settled === true && hit.settledAt === at &&
+    settled.filter((c) => c.settled).length === 1);
+  check("patch: untouched contributions keep their identity (no churn)",
+    settled.find((c) => c.itemId === "i2" && c.debtor === "you") ===
+    cs.find((c) => c.itemId === "i2" && c.debtor === "you"));
+  check("patch: original array not mutated", !rui1.settled);
+
+  const undone = patchContribsSettled(settled, rui1.settleKeys, null);
+  check("patch: null timestamp un-settles",
+    undone.every((c) => !c.settled && c.settledAt === null || !c.settled && !c.settledAt));
+
+  // merged contrib (2 settleKeys) — a transfer's key list settles it whole
+  const dm = makeData();
+  dm.people.find((p) => p.id === "tok").merged_into_id = "marco";
+  const mcs = buildContributions(dm, HOME);
+  const merged = mcs.find((c) => c.itemId === "i3");
+  const patched = patchContribsSettled(mcs, merged.settleKeys, at)
+    .find((c) => c.itemId === "i3");
+  check("patch: deduped (merged) contribution flips as one", patched.settled === true);
+
+  check("patch: agrees with a rebuild after the same DB write", (() => {
+    const d2 = makeData();
+    rui1.settleKeys.forEach((k) => { memberRow(d2, k.itemId, k.personId).settled_at = at; });
+    const rebuilt = buildContributions(d2, HOME);
+    const p = patchContribsSettled(buildContributions(makeData(), HOME), rui1.settleKeys, at);
+    return rebuilt.every((r, i) =>
+      r.settled === p[i].settled && r.settledAt === p[i].settledAt &&
+      r.debtor === p[i].debtor && approx(r.home, p[i].home));
+  })());
 }
 
 // ── statusForExpense ─────────────────────────────────────────────────────
