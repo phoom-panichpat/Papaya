@@ -17,6 +17,8 @@
   --frame: #D9D5CA;
   --knob-off: #D8D3C5;
   --accent: #E8622A;
+  --settled: #4E7A55;   /* muted olive green — a "paid/cleared" state, warm-palette friendly */
+  --open: #B07A2E;      /* muted ochre — an "outstanding" state, quieter than the accent */
   --scrim: rgba(29, 27, 22, 0.28);
   --scrim-sheet: rgba(29, 27, 22, 0.20);
 

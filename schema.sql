@@ -31,6 +31,7 @@ create table people (
   is_token          boolean not null default true,
   is_self           boolean not null default false,
   linked_profile_id uuid references profiles(id),
+  merged_into_id    uuid references people(id),  -- non-destructive alias: this person IS that person (token→account merge); balances resolve through it, un-merge = null
   created_at        timestamptz default now()
 );
 
@@ -44,6 +45,7 @@ create table recordings (
   base_currency text,
   exchange_rate numeric,
   is_active     boolean not null default false,  -- live session (max one per owner; enforced in app)
+  archived_at   timestamptz,                     -- null = active (on Home); set = archived (in History)
   created_at    timestamptz default now()
 );
 
@@ -66,6 +68,7 @@ create table expenses (
   total_amount  numeric not null,
   currency      text,     -- null = inherit recording base / home
   exchange_rate numeric,  -- per-expense override (rare edge case)
+  archived_at   timestamptz,  -- loose expenses only: null = on Home; set = archived (Settlement → History). Deliberate act; settled ≠ archived.
   created_at    timestamptz default now()
 );
 

@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol } from "../lib/format";
 import PeoplePicker from "../components/PeoplePicker";
+import { computePeopleSuggestions } from "../lib/suggestions";
+import { buildAliasMap, resolveAlias, mergePerson } from "../lib/balances";
 
 const CURRENCIES = ["THB", "KRW", "USD", "EUR", "JPY", "GBP", "SGD", "MYR", "LAK"];
 
@@ -35,8 +37,8 @@ function Cluster({ ids, people }) {
 
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "back"];
 
-export default function ExpenseForm({ people, onClose, forceRecordingId = null }) {
-  const [localPeople, setLocalPeople] = useState(people);
+export default function ExpenseForm({ people, onClose, forceRecordingId = null, editExpenseId = null }) {
+  const [localPeople, setLocalPeople] = useState(() => people.filter((p) => !p.merged_into_id));
   const [amount, setAmount] = useState("0");
   const [currency, setCurrency] = useState("THB");
   const [ts] = useState(nowTitle());
@@ -55,17 +57,67 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null }
   const [rate, setRate] = useState("");
   const [sliced, setSliced] = useState(false);
   const [restMembers, setRestMembers] = useState(new Set());
+  const [whosIn, setWhosIn] = useState(new Set());
   const [items, setItems] = useState([]); // carve-outs: {id, label, amount, members:Set}
   const [itemPicker, setItemPicker] = useState(null); // "rest" | itemId
+  const [suggestions, setSuggestions] = useState([]);
   const idRef = useRef(0);
 
-  useEffect(() => { setLocalPeople(people); }, [people]);
+  useEffect(() => { setLocalPeople(people.filter((p) => !p.merged_into_id)); }, [people]);
   const self = localPeople.find((p) => p.is_self);
 
   useEffect(() => {
     (async () => {
       const { data: prof } = await supabase.from("profiles").select("home_currency").maybeSingle();
+      const hc = prof?.home_currency || "THB";
       if (prof?.home_currency) setHomeCurrency(prof.home_currency);
+
+      // ── edit mode: reconstruct the form from an existing expense ──
+      if (editExpenseId) {
+        const { data: e } = await supabase.from("expenses").select("*").eq("id", editExpenseId).maybeSingle();
+        if (!e) return;
+        const aliasMap = buildAliasMap(people);
+        let rec = null;
+        let memberIds = [];
+        if (e.recording_id) {
+          const { data: r } = await supabase.from("recordings").select("*").eq("id", e.recording_id).maybeSingle();
+          rec = r;
+          const { data: rm } = await supabase.from("recording_members").select("person_id").eq("recording_id", e.recording_id);
+          memberIds = [...new Set((rm || []).map((x) => resolveAlias(x.person_id, aliasMap)))];
+        }
+        setRecording(rec);
+        setMembers(memberIds);
+        setPaidBy(resolveAlias(e.paid_by, aliasMap));
+        setCurrency(e.currency || rec?.base_currency || hc);
+        setAmount(String(e.total_amount ?? "0"));
+        setTitle(e.title || "");
+        if (e.exchange_rate) setRate(String(e.exchange_rate));
+        setKeypadOpen(false);
+
+        const { data: its } = await supabase.from("expense_items").select("*").eq("expense_id", editExpenseId).order("is_rest", { ascending: false }).order("sort_order");
+        const list = its || [];
+        const ids = list.map((i) => i.id);
+        const { data: ims } = ids.length
+          ? await supabase.from("expense_item_members").select("item_id, person_id").in("item_id", ids)
+          : { data: [] };
+        const byItem = {};
+        (ims || []).forEach((m) => { (byItem[m.item_id] = byItem[m.item_id] || []).push(resolveAlias(m.person_id, aliasMap)); });
+        const rest = list.find((i) => i.is_rest);
+        const carve = list.filter((i) => !i.is_rest);
+        if (carve.length) {
+          setSliced(true);
+          const restSet = new Set(byItem[rest?.id] || []);
+          setRestMembers(restSet);
+          setItems(carve.map((it) => ({ id: ++idRef.current, label: it.label || "", amount: String(it.amount), members: new Set(byItem[it.id] || []) })));
+          setWhosIn(new Set([...restSet, ...carve.flatMap((it) => byItem[it.id] || [])]));
+        } else {
+          setSplitIds(new Set(byItem[rest?.id] || (self ? [self.id] : [])));
+        }
+        return;
+      }
+
+      // ── new expense: smart defaults from the live/forced recording ──
+      const aliasMap = buildAliasMap(people);
       const { data: recs } = forceRecordingId
         ? await supabase.from("recordings").select("*").eq("id", forceRecordingId).limit(1)
         : await supabase.from("recordings").select("*").eq("is_active", true).limit(1);
@@ -74,7 +126,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null }
       let memberIds = [];
       if (rec) {
         const { data: rm } = await supabase.from("recording_members").select("person_id").eq("recording_id", rec.id);
-        memberIds = (rm || []).map((r) => r.person_id);
+        memberIds = [...new Set((rm || []).map((r) => resolveAlias(r.person_id, aliasMap)))];
         if (rec.base_currency) setCurrency(rec.base_currency);
       }
       setMembers(memberIds);
@@ -82,7 +134,32 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null }
       setPaidBy(self?.id || null);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [self?.id]);
+  }, [self?.id, editExpenseId]);
+
+  // For a loose expense (no recording) the split pickers show "From last time" /
+  // "Often" suggestion chips instead of "Everyone" — there's no defined group.
+  useEffect(() => {
+    let live = true;
+    if (recording) { setSuggestions([]); return; }
+    (async () => {
+      const sugg = await computePeopleSuggestions(self?.id);
+      if (live) setSuggestions(sugg);
+    })();
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [self?.id, recording]);
+
+  // Who's in must always CONTAIN everyone in a bucket (rest / item). The effect only
+  // ADDS, never removes — so leaving a bucket never drops you from Who's in.
+  useEffect(() => {
+    const bucketed = new Set([...restMembers, ...items.flatMap((it) => [...it.members])]);
+    setWhosIn((prev) => {
+      let changed = false;
+      const n = new Set(prev);
+      bucketed.forEach((id) => { if (!n.has(id)) { n.add(id); changed = true; } });
+      return changed ? n : prev;
+    });
+  }, [restMembers, items]);
 
   function press(k) {
     setAmount((a) => {
@@ -137,6 +214,23 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null }
     });
   }
 
+  function toggleWhosIn(p) {
+    if (whosIn.has(p.id)) {
+      setWhosIn((s) => { const n = new Set(s); n.delete(p.id); return n; });
+      setRestMembers((s) => { const n = new Set(s); n.delete(p.id); return n; });
+      setItems((l) => l.map((it) => { const n = new Set(it.members); n.delete(p.id); return { ...it, members: n }; }));
+    } else {
+      setWhosIn((s) => new Set(s).add(p.id));
+      setRestMembers((s) => new Set(s).add(p.id)); // new joiners default into the rest
+    }
+  }
+
+  async function createPersonWhosIn(name) {
+    const owner_id = self?.owner_id;
+    const { data: p } = await supabase.from("people").insert({ owner_id, display_name: name, is_token: true }).select().single();
+    if (p) { setLocalPeople((l) => [...l, p]); setWhosIn((s) => new Set(s).add(p.id)); setRestMembers((s) => new Set(s).add(p.id)); }
+  }
+
   async function createPerson(name) {
     const owner_id = self?.owner_id;
     const { data: p } = await supabase.from("people").insert({ owner_id, display_name: name, is_token: true }).select().single();
@@ -147,10 +241,29 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null }
     }
   }
 
+  // in-place identity fix: merge one or more people into a real person. Remaps
+  // every selection (split / the rest / items / paid-by / members) to the target.
+  async function mergePeople(ids, targetId) {
+    for (const id of ids) await mergePerson(id, targetId);
+    const remap = (set) => {
+      const n = new Set();
+      set.forEach((x) => n.add(ids.includes(x) ? targetId : x));
+      return n;
+    };
+    setSplitIds(remap);
+    setRestMembers(remap);
+    setWhosIn(remap);
+    setItems((l) => l.map((it) => ({ ...it, members: remap(it.members) })));
+    setPaidBy((pb) => (ids.includes(pb) ? targetId : pb));
+    setMembers((m) => [...new Set(m.map((x) => (ids.includes(x) ? targetId : x)))]);
+    setLocalPeople((l) => l.filter((p) => !ids.includes(p.id)));
+  }
+
   function enterSliced() {
     setSliced(true);
     setKeypadOpen(false);
     setRestMembers(new Set(splitIds));
+    setWhosIn(new Set(splitIds));
   }
   function addItem() {
     setItems((l) => [...l, { id: ++idRef.current, label: "", amount: "", members: new Set() }]);
@@ -173,10 +286,19 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null }
       }));
     }
   }
+  // "Everyone" = the recording's members (not the whole friends list).
+  // For a loose expense there's no group, so the chip isn't rendered at all.
   function setTargetAll(target, on) {
-    const set = new Set(on ? localPeople.map((p) => p.id) : []);
+    const set = new Set(on ? members : []);
     if (target === "rest") setRestMembers(set);
     else setItems((l) => l.map((it) => (it.id === target ? { ...it, members: new Set(set) } : it)));
+  }
+  function addTargetPeople(target, ids) {
+    if (target === "rest") setRestMembers((s) => new Set([...s, ...ids]));
+    else setItems((l) => l.map((it) => (it.id === target ? { ...it, members: new Set([...it.members, ...ids]) } : it)));
+  }
+  function addSplitPeople(ids) {
+    setSplitIds((s) => new Set([...s, ...ids]));
   }
   async function createPersonForItem(name) {
     const owner_id = self?.owner_id;
@@ -189,11 +311,17 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null }
     setSaving(true);
     const owner_id = self.owner_id;
     if (foreign && rateNum > 0) localStorage.setItem(`papaya:rate:${currency}:${baseCurrency}`, rate);
-    const { data: exp } = await supabase
-      .from("expenses")
-      .insert({ owner_id, recording_id: recording?.id || null, paid_by: paidBy, title: title.trim() || ts, total_amount: total, currency, exchange_rate: foreign && rateNum > 0 ? rateNum : null })
-      .select()
-      .single();
+    const fields = { recording_id: recording?.id || null, paid_by: paidBy, title: title.trim() || ts, total_amount: total, currency, exchange_rate: foreign && rateNum > 0 ? rateNum : null };
+    let exp;
+    if (editExpenseId) {
+      // editing: update the row and rebuild its split (old items + members cascade-delete)
+      await supabase.from("expenses").update(fields).eq("id", editExpenseId);
+      await supabase.from("expense_items").delete().eq("expense_id", editExpenseId);
+      exp = { id: editExpenseId };
+    } else {
+      const { data } = await supabase.from("expenses").insert({ owner_id, ...fields }).select().single();
+      exp = data;
+    }
     const participants = new Set();
     async function insertItem(label, amt, isRest, memberSet) {
       const { data: it } = await supabase
@@ -350,6 +478,15 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null }
               <button onClick={() => setSliced(false)} className="mono" style={{ fontSize: 10, letterSpacing: "0.08em", color: "var(--text-3)", textTransform: "uppercase" }}>even split</button>
             </div>
 
+            {/* who's in — independent roster; bucket membership (the rest + items) is a subset */}
+            <div style={row} onClick={() => { setKeypadOpen(false); setPicker("whosin"); }}>
+              <span style={{ ...label, color: "var(--text-2)" }}>Who's in</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Cluster ids={[...whosIn]} people={localPeople} />
+                <span className="legend">{String(whosIn.size).padStart(2, "0")} people</span>
+              </span>
+            </div>
+
             {/* the rest */}
             <div style={itemCard}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -456,7 +593,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null }
       )}
 
       {/* people picker */}
-      {picker && (
+      {(picker === "paid" || picker === "split") && (
         <PeoplePicker
           people={localPeople}
           selectedIds={picker === "paid" ? new Set(paidBy ? [paidBy] : []) : splitIds}
@@ -466,6 +603,26 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null }
           onToggle={(p) => (picker === "paid" ? (setPaidBy(p.id), setPicker(null)) : toggleSplit(p))}
           onClose={() => setPicker(null)}
           onCreate={createPerson}
+          onEveryone={picker === "split" && recording ? () => setSplitIds(new Set(members)) : undefined}
+          onClear={picker === "split" && recording ? () => setSplitIds(new Set()) : undefined}
+          suggestions={picker === "split" && !recording ? suggestions : []}
+          onAddPeople={picker === "split" && !recording ? addSplitPeople : undefined}
+          onMergePeople={picker === "split" && editExpenseId ? mergePeople : undefined}
+        />
+      )}
+
+      {/* who's in picker (sliced mode) — independent roster; new joiners land in the rest */}
+      {picker === "whosin" && (
+        <PeoplePicker
+          people={localPeople}
+          selectedIds={whosIn}
+          multi
+          memberIds={members}
+          title="Who's in"
+          onToggle={toggleWhosIn}
+          onClose={() => setPicker(null)}
+          onCreate={createPersonWhosIn}
+          onMergePeople={editExpenseId ? mergePeople : undefined}
         />
       )}
 
@@ -481,10 +638,13 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null }
             memberIds={members}
             title={isRest ? "Who splits the rest?" : "Who's in?"}
             onToggle={(p) => toggleItemMember(itemPicker, p)}
-            onEveryone={() => setTargetAll(itemPicker, true)}
-            onClear={() => setTargetAll(itemPicker, false)}
+            onEveryone={recording ? () => setTargetAll(itemPicker, true) : undefined}
+            onClear={recording ? () => setTargetAll(itemPicker, false) : undefined}
+            suggestions={!recording ? suggestions : []}
+            onAddPeople={!recording ? (ids) => addTargetPeople(itemPicker, ids) : undefined}
             onClose={() => setItemPicker(null)}
             onCreate={createPersonForItem}
+            onMergePeople={editExpenseId ? mergePeople : undefined}
           />
         );
       })()}

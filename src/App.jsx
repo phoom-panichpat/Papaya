@@ -2,9 +2,14 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "./lib/supabase";
 import Home from "./screens/Home";
 import ExpenseForm from "./screens/ExpenseForm";
-import Records from "./screens/Records";
+import People from "./screens/People";
 import CreateRecording from "./screens/CreateRecording";
 import RecordingDetail from "./screens/RecordingDetail";
+import ExpenseDetail from "./screens/ExpenseDetail";
+import Settlement from "./screens/Settlement";
+import RecordSettleSheet from "./screens/RecordSettleSheet";
+import Settings from "./screens/Settings";
+import PersonDetail from "./screens/PersonDetail";
 
 // ─── Splash ────────────────────────────────────────────────────────────────
 function Splash() {
@@ -103,17 +108,7 @@ function AuthScreen() {
   );
 }
 
-// ─── Screen placeholder ──────────────────────────────────────────────────────
-function Placeholder({ title }) {
-  return (
-    <div style={{ padding: 24 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.01em" }}>{title}</h1>
-      <p style={{ color: "var(--text-2)", fontSize: 14, marginTop: 8 }}>Coming next.</p>
-    </div>
-  );
-}
-
-// ─── Stub sheet (for screens not built yet: expense detail, settle) ──────────
+// ─── Stub sheet (for screens not built yet: Settings) ────────────────────────
 function StubSheet({ title, onClose }) {
   return (
     <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "var(--scrim-sheet)", zIndex: 60, animation: "fadeIn 140ms ease" }}>
@@ -131,7 +126,7 @@ function StubSheet({ title, onClose }) {
 // ─── Bottom nav ──────────────────────────────────────────────────────────────
 const TABS = [
   { id: "home", label: "home" },
-  { id: "records", label: "records" },
+  { id: "people", label: "people" },
   { id: "settlement", label: "settlement" },
 ];
 
@@ -170,7 +165,10 @@ export default function App() {
       setSession(data.session);
       setLoading(false);
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => {
+      setSession(s);
+      if (!s) { setStack([]); setTab("home"); setStub(null); }
+    });
     return () => subscription.unsubscribe();
   }, []);
 
@@ -186,6 +184,7 @@ export default function App() {
   if (!session) return <AuthScreen />;
 
   const push = (o) => setStack((s) => [...s, o]);
+  const openExpense = (id) => push({ type: "expenseDetail", id });
   function popOverlay(changed) {
     setStack((s) => s.slice(0, -1));
     if (changed) {
@@ -197,39 +196,74 @@ export default function App() {
   return (
     <div style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-        {tab === "home" && <Home people={people} refreshKey={refreshKey} onNewExpense={() => push({ type: "expense" })} />}
-        {tab === "records" && (
-          <Records
+        {tab === "home" && (
+          <Home
             people={people}
             refreshKey={refreshKey}
-            onNewRecording={() => push({ type: "createRecording" })}
+            onNewExpense={() => push({ type: "expense" })}
+            onOpenExpense={openExpense}
             onOpenRecording={(id) => push({ type: "recordingDetail", id })}
-            onOpenExpense={() => setStub("Expense detail")}
+            onNewRecording={() => push({ type: "createRecording" })}
+            onOpenSettings={() => push({ type: "settings" })}
           />
         )}
-        {tab === "settlement" && <Placeholder title="Settlement" />}
+        {tab === "people" && (
+          <People
+            people={people}
+            refreshKey={refreshKey}
+            onChanged={() => { loadPeople(); setRefreshKey((k) => k + 1); }}
+            onOpenPerson={(id) => push({ type: "personDetail", id })}
+          />
+        )}
+        {tab === "settlement" && <Settlement people={people} refreshKey={refreshKey} onOpenExpense={openExpense} onOpenRecording={(id) => push({ type: "recordingDetail", id })} />}
       </div>
       <BottomNav tab={tab} setTab={setTab} />
 
       {/* overlay stack — each pushed screen renders above the previous */}
       {stack.map((o, i) => {
         const key = `${o.type}-${i}`;
-        if (o.type === "expense") return <ExpenseForm key={key} people={people} forceRecordingId={o.recordingId || null} onClose={popOverlay} />;
-        if (o.type === "createRecording") return <CreateRecording key={key} people={people} onClose={popOverlay} />;
-        if (o.type === "recordingDetail")
-          return (
+        let el = null;
+        if (o.type === "expense") el = <ExpenseForm people={people} forceRecordingId={o.recordingId || null} editExpenseId={o.editExpenseId || null} onClose={popOverlay} />;
+        else if (o.type === "createRecording") el = <CreateRecording people={people} editRecordingId={o.editRecordingId || null} onClose={popOverlay} />;
+        else if (o.type === "recordingDetail")
+          el = (
             <RecordingDetail
-              key={key}
               recordingId={o.id}
               people={people}
               refreshKey={refreshKey}
               onAddExpense={() => push({ type: "expense", recordingId: o.id })}
-              onOpenExpense={() => setStub("Expense detail")}
-              onSettle={() => setStub("Settle up this record")}
+              onOpenExpense={openExpense}
+              onSettle={() => push({ type: "recordSettle", id: o.id })}
+              onEdit={(id) => push({ type: "createRecording", editRecordingId: id })}
               onClose={() => popOverlay(false)}
             />
           );
-        return null;
+        else if (o.type === "expenseDetail")
+          el = (
+            <ExpenseDetail
+              expenseId={o.id}
+              people={people}
+              refreshKey={refreshKey}
+              onEdit={(id) => push({ type: "expense", editExpenseId: id })}
+              onClose={popOverlay}
+            />
+          );
+        else if (o.type === "recordSettle") el = <RecordSettleSheet recordingId={o.id} people={people} onClose={() => popOverlay(true)} />;
+        else if (o.type === "settings") el = <Settings people={people} onClose={popOverlay} />;
+        else if (o.type === "personDetail")
+          el = (
+            <PersonDetail
+              personId={o.id}
+              people={people}
+              refreshKey={refreshKey}
+              onOpenExpense={openExpense}
+              onOpenRecording={(id) => push({ type: "recordingDetail", id })}
+              onChanged={() => { loadPeople(); setRefreshKey((k) => k + 1); }}
+              onClose={popOverlay}
+            />
+          );
+        if (!el) return null;
+        return <div key={key} style={{ position: "absolute", inset: 0, zIndex: 50 + i }}>{el}</div>;
       })}
 
       {stub && <StubSheet title={stub} onClose={() => setStub(null)} />}

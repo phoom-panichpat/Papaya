@@ -1,6 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol, formatMoney, padIndex } from "../lib/format";
+import { statusForExpense, toHome, buildAliasMap, resolveAlias } from "../lib/balances";
+import DualMoney from "../components/DualMoney";
 
 function monthDay(d) {
   return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -11,8 +13,8 @@ function monthDay(d) {
 function SettledPill({ status }) {
   if (!status) return null;
   const map = {
-    settled: { label: "settled", color: "var(--settled, #4E7A55)" },
-    open: { label: "open", color: "var(--text-3)" },
+    settled: { label: "settled", color: "var(--settled)" },
+    open: { label: "open", color: "var(--open)" },
   };
   const s = status.kind === "partial"
     ? { label: status.label, color: "var(--accent)" }
@@ -22,22 +24,27 @@ function SettledPill({ status }) {
   );
 }
 
-export default function RecordingDetail({ recordingId, people, onAddExpense, onOpenExpense, onSettle, onClose, refreshKey }) {
+export default function RecordingDetail({ recordingId, people, onAddExpense, onOpenExpense, onSettle, onEdit, onClose, refreshKey }) {
   const [rec, setRec] = useState(null);
   const [logs, setLogs] = useState([]);
   const [memberIds, setMemberIds] = useState([]);
+  const [home, setHome] = useState("THB");
   const [loading, setLoading] = useState(true);
 
+  const aliasMap = useMemo(() => buildAliasMap(people), [people]);
+
   const nameOf = useCallback((id) => {
-    const p = (people || []).find((x) => x.id === id);
+    const p = (people || []).find((x) => x.id === resolveAlias(id, aliasMap));
     return p ? (p.is_self ? "You" : p.display_name) : "—";
-  }, [people]);
+  }, [people, aliasMap]);
 
   const load = useCallback(async () => {
+    const { data: prof } = await supabase.from("profiles").select("home_currency").maybeSingle();
+    setHome(prof?.home_currency || "THB");
     const { data: r } = await supabase.from("recordings").select("*").eq("id", recordingId).maybeSingle();
     setRec(r);
     const { data: rm } = await supabase.from("recording_members").select("person_id").eq("recording_id", recordingId);
-    setMemberIds((rm || []).map((x) => x.person_id));
+    setMemberIds([...new Set((rm || []).map((x) => resolveAlias(x.person_id, aliasMap)))]);
     const { data: exps } = await supabase.from("expenses").select("*").eq("recording_id", recordingId).order("created_at", { ascending: true });
     const expList = exps || [];
     if (expList.length) {
@@ -55,28 +62,24 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
         (byExp[eid] = byExp[eid] || []).push(m);
       });
       expList.forEach((e) => {
-        const rows = byExp[e.id] || [];
-        // owers = distinct persons who aren't the payer
-        const owers = [...new Set(rows.map((r2) => r2.person_id))].filter((pid) => pid !== e.paid_by);
-        if (!owers.length) { e.status = { kind: "settled" }; return; }
-        const settledOf = (pid) => rows.filter((r2) => r2.person_id === pid).every((r2) => r2.settled_at);
-        const settled = owers.filter(settledOf);
-        if (settled.length === owers.length) e.status = { kind: "settled" };
-        else if (settled.length === 0) e.status = { kind: "open" };
-        else {
-          const open = owers.filter((pid) => !settledOf(pid));
-          const firstOpen = nameOf(open[0]);
-          e.status = { kind: "partial", label: `${settled.length} of ${owers.length} · ${firstOpen} open` };
-        }
+        e.status = statusForExpense(byExp[e.id] || [], e.paid_by, nameOf);
       });
     }
     setLogs(expList);
     setLoading(false);
-  }, [recordingId, nameOf]);
+  }, [recordingId, nameOf, aliasMap]);
 
   useEffect(() => { load(); }, [load, refreshKey]);
 
+  async function toggleArchive() {
+    await supabase.from("recordings").update({ archived_at: rec?.archived_at ? null : new Date().toISOString() }).eq("id", recordingId);
+    onClose(true);
+  }
+
   const base = rec?.base_currency || null;
+  const baseCur = base || home;
+  const dual = !!base && base !== home;
+  const recMap = rec ? { [rec.id]: rec } : {};
   const dateLabel = (() => {
     if (!logs.length) return "New";
     const ds = logs.map((l) => new Date(l.created_at)).sort((a, b) => a - b);
@@ -86,6 +89,7 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
   })();
 
   const roster = memberIds.length ? memberIds : [];
+  const allSettled = logs.length === 0 || logs.every((e) => e.status?.kind === "settled");
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "var(--bg)", zIndex: 30, display: "flex", flexDirection: "column" }}>
@@ -95,7 +99,12 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
         <div style={{ flex: 1, textAlign: "center" }}>
           <span className="legend">Recording</span>
         </div>
-        <div style={{ width: 40 }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <button onClick={() => onEdit(recordingId)} className="mono" style={{ height: 40, padding: "0 10px", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)" }}>Edit</button>
+          {(allSettled || rec?.archived_at) && (
+            <button onClick={toggleArchive} className="mono" style={{ height: 40, padding: "0 10px", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: rec?.archived_at ? "var(--accent)" : "var(--text-3)" }}>{rec?.archived_at ? "Unarchive" : "Archive"}</button>
+          )}
+        </div>
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "0 0 40px" }}>
@@ -131,10 +140,10 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
           </div>
         )}
 
-        {/* actions — settle-up ORANGE primary, add-expense secondary */}
-        <div style={{ padding: "0 24px", display: "flex", flexDirection: "column", gap: 10 }}>
-          <button onClick={onSettle} style={{ height: 48, borderRadius: 14, background: "var(--accent)", color: "#fff", fontSize: 15, fontWeight: 600 }}>Settle up this record</button>
-          <button onClick={onAddExpense} style={{ height: 48, borderRadius: 14, border: "1px solid var(--hairline)", background: "var(--surface)", fontSize: 15, fontWeight: 500 }}>+ Add expense</button>
+        {/* actions — settle-up ORANGE primary (inline ~80%), add-expense square "+" */}
+        <div style={{ padding: "0 24px", display: "flex", flexDirection: "row", gap: 10 }}>
+          <button onClick={onSettle} style={{ flex: 1, height: 48, borderRadius: 14, background: "var(--accent)", color: "#fff", fontSize: 15, fontWeight: 600 }}>Settle up this record</button>
+          <button onClick={onAddExpense} aria-label="Add expense" title="Add expense" style={{ width: 48, height: 48, flex: "none", borderRadius: 14, border: "1px solid var(--hairline)", background: "var(--surface)", fontSize: 24, fontWeight: 400, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
         </div>
 
         {/* logs */}
@@ -147,17 +156,24 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
               <div
                 key={log.id}
                 onClick={() => onOpenExpense(log.id)}
-                style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 0", borderBottom: "1px solid var(--hairline-3)", cursor: "pointer" }}
+                style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 0", borderBottom: "1px solid var(--hairline-3)", cursor: "pointer", opacity: log.status?.kind === "settled" ? 0.5 : 1 }}
               >
                 <span className="mono" style={{ fontSize: 10, color: "var(--text-4)", flex: "none" }}>{padIndex(i + 1)}</span>
                 <span style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
-                  <span style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{log.title}</span>
+                  <span style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textDecoration: log.status?.kind === "settled" ? "line-through" : "none" }}>{log.title}</span>
                   <SettledPill status={log.status} />
                 </span>
-                <span style={{ display: "flex", alignItems: "baseline", gap: 2, flex: "none" }}>
-                  <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(log.currency || base)}</span>
-                  <span className="money" style={{ fontSize: 16 }}>{formatMoney(log.total_amount, log.currency || base)}</span>
-                </span>
+                <DualMoney
+                  style={{ flex: "none" }}
+                  primary={
+                    <span style={{ display: "flex", alignItems: "baseline", gap: 2 }}>
+                      <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(log.currency || base)}</span>
+                      <span className="money" style={{ fontSize: 16 }}>{formatMoney(log.total_amount, log.currency || base)}</span>
+                    </span>
+                  }
+                  homeAmount={dual ? toHome(log.total_amount, log, recMap, home) : null}
+                  homeCur={home}
+                />
               </div>
             ))
           )}

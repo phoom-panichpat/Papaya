@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol } from "../lib/format";
 import PeoplePicker from "../components/PeoplePicker";
+import { computePeopleSuggestions } from "../lib/suggestions";
+import { buildAliasMap, resolveAlias, mergePerson } from "../lib/balances";
 
 const CURRENCIES = ["THB", "KRW", "USD", "EUR", "JPY", "GBP", "SGD", "MYR", "LAK"];
 
@@ -23,8 +25,9 @@ function Cluster({ ids, people }) {
   );
 }
 
-export default function CreateRecording({ people, onClose }) {
-  const [localPeople, setLocalPeople] = useState(people);
+export default function CreateRecording({ people, onClose, editRecordingId = null }) {
+  const edit = !!editRecordingId;
+  const [localPeople, setLocalPeople] = useState(() => people.filter((p) => !p.merged_into_id));
   const [name, setName] = useState("");
   const [homeCurrency, setHomeCurrency] = useState("THB");
   const [customCurrency, setCustomCurrency] = useState(false);
@@ -37,55 +40,45 @@ export default function CreateRecording({ people, onClose }) {
   const [saving, setSaving] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
 
-  useEffect(() => { setLocalPeople(people); }, [people]);
+  useEffect(() => { setLocalPeople(people.filter((p) => !p.merged_into_id)); }, [people]);
   const self = localPeople.find((p) => p.is_self);
 
   useEffect(() => {
     (async () => {
       const { data: prof } = await supabase.from("profiles").select("home_currency").maybeSingle();
-      if (prof?.home_currency) { setHomeCurrency(prof.home_currency); setCurrency(prof.home_currency); }
+      const hc = prof?.home_currency || "THB";
+      setHomeCurrency(hc);
+      if (editRecordingId) {
+        const { data: r } = await supabase.from("recordings").select("*").eq("id", editRecordingId).maybeSingle();
+        if (r) {
+          setName(r.name || "");
+          if (r.base_currency) {
+            setCustomCurrency(true);
+            setCurrency(r.base_currency);
+            if (r.exchange_rate != null) setRate(String(r.exchange_rate));
+          } else {
+            setCurrency(hc);
+          }
+          const aliasMap = buildAliasMap(people);
+          const { data: rm } = await supabase.from("recording_members").select("person_id").eq("recording_id", editRecordingId);
+          setMemberIds(new Set((rm || []).map((x) => resolveAlias(x.person_id, aliasMap))));
+        }
+      } else {
+        setCurrency(hc);
+      }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // suggestions for who's in — recency ("from last time") + frequency ("often").
-  // "Often" weighs BOTH recordings appeared in AND distinct expenses involved in
-  // (as a split member or the payer) — i.e. who you actually spend with.
+  // See src/lib/suggestions.js — shared with the expense form's loose-expense picker.
   useEffect(() => {
+    let live = true;
     (async () => {
-      const selfId = self?.id;
-      const notSelf = (id) => id !== selfId;
-      const [{ data: recs }, { data: rms }, { data: exps }, { data: its }] = await Promise.all([
-        supabase.from("recordings").select("id").order("created_at", { ascending: false }),
-        supabase.from("recording_members").select("recording_id, person_id"),
-        supabase.from("expenses").select("id, paid_by"),
-        supabase.from("expense_items").select("id, expense_id"),
-      ]);
-      const itemIds = (its || []).map((i) => i.id);
-      const { data: ims } = itemIds.length
-        ? await supabase.from("expense_item_members").select("item_id, person_id").in("item_id", itemIds)
-        : { data: [] };
-      const itemToExp = Object.fromEntries((its || []).map((i) => [i.id, i.expense_id]));
-
-      const sugg = [];
-      if (recs?.length) {
-        const lastIds = (rms || []).filter((m) => m.recording_id === recs[0].id).map((m) => m.person_id).filter(notSelf);
-        if (lastIds.length) sugg.push({ label: "From last time", ids: [...new Set(lastIds)] });
-      }
-
-      // per-person: # recordings + # distinct expenses
-      const recCount = {};
-      (rms || []).forEach((m) => { recCount[m.person_id] = (recCount[m.person_id] || 0) + 1; });
-      const expsByPerson = {};
-      const addExp = (pid, eid) => { if (pid && eid) (expsByPerson[pid] = expsByPerson[pid] || new Set()).add(eid); };
-      (ims || []).forEach((m) => addExp(m.person_id, itemToExp[m.item_id]));
-      (exps || []).forEach((e) => addExp(e.paid_by, e.id));
-
-      const allIds = new Set([...Object.keys(recCount), ...Object.keys(expsByPerson)]);
-      const score = (id) => (recCount[id] || 0) + (expsByPerson[id]?.size || 0);
-      const often = [...allIds].filter(notSelf).filter((id) => score(id) >= 2).sort((a, b) => score(b) - score(a)).slice(0, 5);
-      if (often.length) sugg.push({ label: "Often", ids: often });
-      setSuggestions(sugg);
+      const sugg = await computePeopleSuggestions(self?.id);
+      if (live) setSuggestions(sugg);
     })();
+    return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [self?.id]);
 
@@ -102,26 +95,48 @@ export default function CreateRecording({ people, onClose }) {
     if (p) { setLocalPeople((l) => [...l, p]); setMemberIds((s) => new Set(s).add(p.id)); }
   }
 
+  // in-place identity fix: merge one or more people into a real person. Remaps
+  // the member roster to the target so the sheet stays consistent.
+  async function mergePeople(ids, targetId) {
+    for (const id of ids) await mergePerson(id, targetId);
+    setMemberIds((s) => { const n = new Set(); s.forEach((x) => n.add(ids.includes(x) ? targetId : x)); return n; });
+    setLocalPeople((l) => l.filter((p) => !ids.includes(p.id)));
+  }
+
   async function save() {
     if (!canSave) return;
     setSaving(true);
     const owner_id = self.owner_id;
-    if (startNow) await supabase.from("recordings").update({ is_active: false }).neq("id", "00000000-0000-0000-0000-000000000000");
-    const { data: rec } = await supabase
-      .from("recordings")
-      .insert({
-        owner_id,
+    const ids = [...new Set([...(self ? [self.id] : []), ...memberIds])];
+    if (editRecordingId) {
+      await supabase.from("recordings").update({
         name: name.trim(),
         base_currency: customCurrency ? currency : null,
         exchange_rate: foreign && rateNum > 0 ? rateNum : null,
-        is_active: startNow,
-      })
-      .select()
-      .single();
-    // members: always include self, plus any picked
-    const ids = [...new Set([...(self ? [self.id] : []), ...memberIds])];
-    if (rec && ids.length) {
-      await supabase.from("recording_members").insert(ids.map((pid) => ({ recording_id: rec.id, person_id: pid, owner_id })));
+      }).eq("id", editRecordingId);
+      // reconcile recording_members: add newly-checked, remove unchecked (roster only — never touches expense splits)
+      const { data: cur } = await supabase.from("recording_members").select("person_id").eq("recording_id", editRecordingId);
+      const curIds = new Set((cur || []).map((x) => x.person_id));
+      const toAdd = ids.filter((id) => !curIds.has(id));
+      const toRemove = [...curIds].filter((id) => !new Set(ids).has(id));
+      if (toAdd.length) await supabase.from("recording_members").insert(toAdd.map((pid) => ({ recording_id: editRecordingId, person_id: pid, owner_id })));
+      if (toRemove.length) await supabase.from("recording_members").delete().eq("recording_id", editRecordingId).in("person_id", toRemove);
+    } else {
+      if (startNow) await supabase.from("recordings").update({ is_active: false }).neq("id", "00000000-0000-0000-0000-000000000000");
+      const { data: rec } = await supabase
+        .from("recordings")
+        .insert({
+          owner_id,
+          name: name.trim(),
+          base_currency: customCurrency ? currency : null,
+          exchange_rate: foreign && rateNum > 0 ? rateNum : null,
+          is_active: startNow,
+        })
+        .select()
+        .single();
+      if (rec && ids.length) {
+        await supabase.from("recording_members").insert(ids.map((pid) => ({ recording_id: rec.id, person_id: pid, owner_id })));
+      }
     }
     setSaving(false);
     onClose(true);
@@ -136,9 +151,9 @@ export default function CreateRecording({ people, onClose }) {
       <div style={{ height: 54, flex: "none", display: "flex", alignItems: "center", padding: "0 12px", gap: 8 }}>
         <button onClick={() => onClose(false)} style={{ width: 40, height: 40, fontSize: 20, borderRadius: "50%" }}>←</button>
         <div style={{ flex: 1, textAlign: "center" }}>
-          <span className="legend">New recording</span>
+          <span className="legend">{edit ? "Edit recording" : "New recording"}</span>
         </div>
-        <button onClick={save} disabled={!canSave} style={{ height: 32, padding: "0 17px", borderRadius: 999, background: "var(--accent)", color: "#fff", fontSize: 13, fontWeight: 600, opacity: canSave ? 1 : 0.4 }}>Create</button>
+        <button onClick={save} disabled={!canSave} style={{ height: 32, padding: "0 17px", borderRadius: 999, background: "var(--accent)", color: "#fff", fontSize: 13, fontWeight: 600, opacity: canSave ? 1 : 0.4 }}>{edit ? "Save" : "Create"}</button>
       </div>
 
       <div style={{ flex: 1, overflowY: "auto" }}>
@@ -197,19 +212,21 @@ export default function CreateRecording({ people, onClose }) {
           </div>
         )}
 
-        {/* start recording now */}
-        <div style={{ ...row }}>
-          <span>
-            <span style={label}>Start recording now</span>
-            <div className="mono" style={{ fontSize: 10, color: "var(--text-4)", marginTop: 3 }}>new expenses file into this one</div>
-          </span>
-          <span
-            onClick={() => setStartNow((v) => !v)}
-            style={{ display: "flex", alignItems: "center", width: 48, height: 27, border: "1px solid var(--hairline)", borderRadius: "var(--r-toggle)", background: "var(--bg)", padding: "0 3px", cursor: "pointer", flex: "none" }}
-          >
-            <span style={{ width: 20, height: 20, borderRadius: "50%", background: startNow ? "var(--accent)" : "var(--knob-off)", transform: `translateX(${startNow ? 20 : 0}px)`, transition: "transform 170ms var(--ease), background 170ms ease" }} />
-          </span>
-        </div>
+        {/* start recording now (create-only) */}
+        {!edit && (
+          <div style={{ ...row }}>
+            <span>
+              <span style={label}>Start recording now</span>
+              <div className="mono" style={{ fontSize: 10, color: "var(--text-4)", marginTop: 3 }}>new expenses file into this one</div>
+            </span>
+            <span
+              onClick={() => setStartNow((v) => !v)}
+              style={{ display: "flex", alignItems: "center", width: 48, height: 27, border: "1px solid var(--hairline)", borderRadius: "var(--r-toggle)", background: "var(--bg)", padding: "0 3px", cursor: "pointer", flex: "none" }}
+            >
+              <span style={{ width: 20, height: 20, borderRadius: "50%", background: startNow ? "var(--accent)" : "var(--knob-off)", transform: `translateX(${startNow ? 20 : 0}px)`, transition: "transform 170ms var(--ease), background 170ms ease" }} />
+            </span>
+          </div>
+        )}
       </div>
 
       {/* currency dropdown */}
@@ -238,8 +255,10 @@ export default function CreateRecording({ people, onClose }) {
           onToggle={toggleMember}
           suggestions={suggestions}
           onAddPeople={(ids) => setMemberIds((s) => new Set([...s, ...ids]))}
+          onClear={() => setMemberIds(new Set())}
           onClose={() => setPicker(false)}
           onCreate={createPerson}
+          onMergePeople={editRecordingId ? mergePeople : undefined}
         />
       )}
     </div>
