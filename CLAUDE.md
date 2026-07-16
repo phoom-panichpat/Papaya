@@ -33,6 +33,7 @@ Deeper design rationale lives in the agent memory file (`~/.claude/projects/-Use
 | 6. Settlement / Expense detail | ✅ done, verified live (30/30 math tests + browser E2E) |
 | 6-rev. Phase-6 feedback rework (nav merge, People tab, settled lifecycle, archive) | 🔨 batches 1–2 done + verified live; 3–5 queued |
 | 7. Settings / Friends | 🔨 People tab (roster/add/edit/remove) + Settings screen (home currency / profile / sign-out) DONE + verified; token merge/claim still ⬜ |
+| 8-pre. Performance/data-layer refactor | 🔨 P0 (in-repo guardrail tests, 40/40) done; P1–P3 queued — see §8 |
 | 8. Punch-list + deploy | ⬜ |
 
 **What works right now (verified live against Supabase):** sign in → **Home** merged feed (live recording bar under the header; search; recordings + loose expenses; settled expenses shown faded+struck; "+ Rec" new recording; FAB) → FAB opens expense form (keypad, currency dropdown, foreign exchange-rate card, payer + split pickers, "Split it up" carve-outs) → Save persists + Home refreshes. **People** tab = roster (All/Accounts/Placeholders + search + add/rename/emoji/remove). **Settlement** = Balances (You-centric direct pairwise, item-check toggle settle) + History (archived recordings + settled loose). Expense detail, recording detail, record-settle sheet all support toggle-in-place settle with faded+struck treatment. Archive/Unarchive routes records between Home and History.
@@ -84,6 +85,7 @@ Commits on `papaya-v2`: `8725d11` (foundation/Home/expense form), `c2a23f2` (cle
 npm install
 npm run dev      # Vite dev server, http://localhost:5173
 npm run build    # production build (use to verify compile after changes)
+npm test         # money-core guardrail tests (tests/balances-core.test.mjs) — must stay 40/40
 ```
 
 - Env: `.env` holds `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` (gitignored; template in `.env.example`). The Supabase project is fresh and the v2 schema is applied.
@@ -121,6 +123,8 @@ src/
     RecordSettleSheet.jsx # scoped "who owes who" direct-pairwise, toggle-in-place paid/unpaid
   components/
     PeoplePicker.jsx   # reusable bottom-sheet: search-that-creates; Everyone/Clear OR suggestion chips
+tests/
+  balances-core.test.mjs # money-core guardrail suite (plain Node; `npm test`, 40/40)
 schema.sql             # v2 Postgres schema (apply to a clean DB)
 design/                # TOKENS.md (design spec) + reference .dc.html mockups
 CLAUDE.md              # this file
@@ -215,11 +219,16 @@ Then the audit-trail phase (its own design session — see the ⚠️ block belo
 
 **⚠️ PHASE 8-pre — PERFORMANCE + DATA-LAYER REFACTOR (Phoom raised 2026-07-16: "app feels slow/laggy, esp. record ops").** Do this AFTER the v1 feature set is frozen (Unit 5 + whatever audit-trail scope ships in v1) and BEFORE deploy — refactoring against a moving data model means doing it twice. **Diagnosis (grounded in code, not speculation):**
 - **Root cause #1 — every mutation re-fetches the WHOLE DB.** `loadSettlementData()` pulls all 6 tables UNFILTERED (expenses/items/members/settlements/recordings/people) + rebuilds ALL contributions, and it's called by `Settlement`, `RecordSettleSheet`, `PersonDetail` on mount AND on every local `bump`. So each transfer tap in RecordSettleSheet = full 6-table reload + full recompute. Scales with total history, not the one record. **This is the main "settle up feels slow."**
-- **Root cause #2 — sequential settle writes.** `settleShares`/`unsettleShares` in `balances.js` loop `for (const r of rows) await update()` — one round-trip per share, in series, THEN the #1 reload. (Being batched to `Promise.all` in the immediate quick-win below — but the reload remains.)
+- ~~**Root cause #2 — sequential settle writes.**~~ **FIXED** — `settleShares`/`unsettleShares` in `balances.js` now batch via `Promise.all` (verified in code 2026-07-17). The #1 reload after them remains.
 - **Root cause #3 — reactivity gaps.** "Unarchive a record → must nav to another tab and back to see it update" = stale state; the mutation succeeds but the visible list doesn't re-derive until remount. Wiring issue, not raw speed.
 - **Scope (tight — NOT a stylistic rewrite; that's high-risk/low-ROI pre-deploy):** (1) stop full-reloading — load once into a shared data layer / scope queries per record; (2) memoize `buildContributions`; (3) optimistic UI on settle toggles (flip local state instantly, write in background) so taps feel instant; (4) fix reactivity gaps so mutations refresh the visible screen without a remount. Cleanliness is a byproduct of consolidating the data layer, not the goal.
 - **Who/model:** 🔴🔴 correctness-must-beat-cost (touches the money IO + cross-screen state) → **runs in Claude Code (me), NOT opencode.** Do it on **Opus 4.8** with the `test-merge`/balances **node tests as a guardrail** (prove the math is unchanged at each step); escalate the session to **Fable 5 xhigh** only if it turns architectural (e.g. a shared data store/context). Not a separate agent — a focused Claude Code session.
-- **Immediate quick-win already queued (2026-07-16):** RecordSettleSheet snackbar removal (Phoom: the "Marked paid/unpaid" toast shouldn't exist — toggle-in-place IS the undo, same as the ExpenseDetail removal in 7c-3b) + `Promise.all` batching of settle/unsettle writes in `balances.js`. Low-risk, independent of the big refactor. Note: batching helps but does NOT fix root cause #1.
+- **Immediate quick-win ✅ DONE (verified in code 2026-07-17):** RecordSettleSheet snackbar removed (toggle-in-place IS the undo, same as the ExpenseDetail removal in 7c-3b) + `Promise.all` batching of settle/unsettle writes in `balances.js`. Both landed in the `be6bf25` span. Batching helps but does NOT fix root cause #1.
+- **P0 ✅ DONE (2026-07-17, Claude Code) — guardrail tests recreated IN-REPO.** The old 30/30 balances + 19/19 merge node suites lived in a dead session's scratchpad and were LOST. Recreated as **`tests/balances-core.test.mjs`** (plain Node, no framework; **`npm test`** → 40/40). Covers: `toHome` both hops + defaults, `buildContributions` (payer-excluded, native/base/home triple, settleKeys, settled flag, memberless item), alias merge (chain/cycle, redirect, overlap-dedup ÷distinct, self-wash, dedup settled status, original-row settleKeys), `pairNet` (direction/antisymmetry/settled-excluded), `netByPerson` (base key, zero-sum), `directTransfers` (two-payer pairwise, share-backing, no-strand, wash-out), `minimizeTransfers`, `statusForExpense`. **Run `npm test` after ANY change to the money path — it must stay 40/40 through the whole refactor.**
+- **Remaining units (run here in Claude Code, one at a time, `npm test` green after each):**
+  - **P1 — optimistic settle toggles + stop reload-on-bump.** In `Settlement.jsx` / `RecordSettleSheet.jsx` / `PersonDetail.jsx`: flip the local contribution state instantly on toggle, fire `settleShares`/`unsettleShares` in the background, revert + surface an error if the write fails; drop the `bump`-triggered full `loadSettlementData()` re-fetch (keep load-on-mount). Biggest feel win — kills the per-tap 6-table reload.
+  - **P2 — scope/cut the loads.** Parameterize the settlement load for RecordSettleSheet (only that record's expenses/items/members) and/or a simple module-level cache invalidated on mutation; memoize `buildContributions` where inputs are unchanged.
+  - **P3 — reactivity gaps.** Diagnose + fix "unarchive → list doesn't update until tab-switch" (wiring, not speed; likely a missing `onChanged`/refreshKey path). Small; may route to GLM after diagnosis.
 
 Then **Phase 8** punch-list + deploy (Vercel). Deferred to future multi-user phase: claim-to-account (token→real login) + possible-duplicates nudge.
 
