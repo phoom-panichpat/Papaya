@@ -9,25 +9,21 @@ const EMOJI = ["🙂", "🦊", "🐢", "🐝", "🐙", "🐳", "🦉", "🐼", "
 // Full-screen pushed overlay (same pattern as CreateRecording / RecordingDetail).
 // onClose(changed?) — passing true bumps refreshKey so mounted screens re-read
 // the home currency / self person.
-export default function Settings({ people, onClose }) {
-  const [homeCurrency, setHomeCurrency] = useState("THB");
+//
+// This screen opens with ZERO network: App already holds the session (email), the
+// people roster (self), and the home currency, so everything here is passed in.
+// It used to re-fetch the profile row + call auth.getUser() on every open.
+export default function Settings({ people, email = "", homeCurrency: homeCurrencyProp = "THB", onClose }) {
+  const [homeCurrency, setHomeCurrency] = useState(homeCurrencyProp);
   const [currencyOpen, setCurrencyOpen] = useState(false);
-  const [email, setEmail] = useState("");
-  const [self, setSelf] = useState(null);
+  const [self, setSelf] = useState(() => (people || []).find((p) => p.is_self) || null);
   const [editingSelf, setEditingSelf] = useState(false);
   const [dirty, setDirty] = useState(false); // did anything change that other screens need to re-read?
   const [signingOut, setSigningOut] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      const { data: prof } = await supabase.from("profiles").select("home_currency").maybeSingle();
-      if (prof?.home_currency) setHomeCurrency(prof.home_currency);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user?.email) setEmail(user.email);
-      const s = (people || []).find((p) => p.is_self) || null;
-      setSelf(s);
-    })();
-  }, [people]);
+  // Local state so a change shows instantly; re-seed if App's value arrives late
+  // (only possible if Settings is opened before App's first profile load lands).
+  useEffect(() => { setHomeCurrency(homeCurrencyProp); }, [homeCurrencyProp]);
 
   async function changeHomeCurrency(c) {
     setCurrencyOpen(false);

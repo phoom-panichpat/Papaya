@@ -53,6 +53,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   const [currencyOpen, setCurrencyOpen] = useState(false);
   const [note, setNote] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [homeCurrency, setHomeCurrency] = useState("THB");
   const [rate, setRate] = useState("");
   const [sliced, setSliced] = useState(false);
@@ -68,70 +69,83 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
 
   useEffect(() => {
     (async () => {
-      const { data: prof } = await supabase.from("profiles").select("home_currency").maybeSingle();
-      const hc = prof?.home_currency || "THB";
-      if (prof?.home_currency) setHomeCurrency(prof.home_currency);
-
-      // ── edit mode: reconstruct the form from an existing expense ──
-      if (editExpenseId) {
-        const { data: e } = await supabase.from("expenses").select("*").eq("id", editExpenseId).maybeSingle();
-        if (!e) return;
+      try {
         const aliasMap = buildAliasMap(people);
-        let rec = null;
+
+        // ── edit mode: reconstruct the form from an existing expense ──
+        if (editExpenseId) {
+          // Phase 1 — profile, expense, items: all keyed on ids we already have
+          const [profRes, expRes, itemsRes] = await Promise.all([
+            supabase.from("profiles").select("home_currency").maybeSingle(),
+            supabase.from("expenses").select("*").eq("id", editExpenseId).maybeSingle(),
+            supabase.from("expense_items").select("*").eq("expense_id", editExpenseId).order("is_rest", { ascending: false }).order("sort_order"),
+          ]);
+          const hc = profRes.data?.home_currency || "THB";
+          const e = expRes.data;
+          if (!e) return; // missing → bail (finally still sets loading false)
+          const list = itemsRes.data || [];
+          const ids = list.map((i) => i.id);
+
+          // Phase 2 — recording + recording_members (if any) + item members (if any)
+          const [recRes, rmRes, imsRes] = await Promise.all([
+            e.recording_id ? supabase.from("recordings").select("*").eq("id", e.recording_id).maybeSingle() : null,
+            e.recording_id ? supabase.from("recording_members").select("person_id").eq("recording_id", e.recording_id) : null,
+            ids.length ? supabase.from("expense_item_members").select("item_id, person_id").in("item_id", ids) : null,
+          ]);
+          const rec = recRes?.data || null;
+          const memberIds = [...new Set((rmRes?.data || []).map((x) => resolveAlias(x.person_id, aliasMap)))];
+          const byItem = {};
+          (imsRes?.data || []).forEach((m) => { (byItem[m.item_id] = byItem[m.item_id] || []).push(resolveAlias(m.person_id, aliasMap)); });
+          const rest = list.find((i) => i.is_rest);
+          const carve = list.filter((i) => !i.is_rest);
+
+          // set all state together → one render, no progressive fill
+          if (profRes.data?.home_currency) setHomeCurrency(profRes.data.home_currency);
+          setRecording(rec);
+          setMembers(memberIds);
+          setPaidBy(resolveAlias(e.paid_by, aliasMap));
+          setCurrency(e.currency || rec?.base_currency || hc);
+          setAmount(String(e.total_amount ?? "0"));
+          setTitle(e.title || "");
+          if (e.exchange_rate) setRate(String(e.exchange_rate));
+          setKeypadOpen(false);
+          if (carve.length) {
+            setSliced(true);
+            const restSet = new Set(byItem[rest?.id] || []);
+            setRestMembers(restSet);
+            setItems(carve.map((it) => ({ id: ++idRef.current, label: it.label || "", amount: String(it.amount), members: new Set(byItem[it.id] || []) })));
+            setWhosIn(new Set([...restSet, ...carve.flatMap((it) => byItem[it.id] || [])]));
+          } else {
+            setSplitIds(new Set(byItem[rest?.id] || (self ? [self.id] : [])));
+          }
+          return;
+        }
+
+        // ── new expense: smart defaults from the live/forced recording ──
+        // Phase 1 — profile + recording
+        const [profRes, recsRes] = await Promise.all([
+          supabase.from("profiles").select("home_currency").maybeSingle(),
+          forceRecordingId
+            ? supabase.from("recordings").select("*").eq("id", forceRecordingId).limit(1)
+            : supabase.from("recordings").select("*").eq("is_active", true).limit(1),
+        ]);
+        const hc = profRes.data?.home_currency || "THB";
+        const rec = recsRes.data?.[0] || null;
         let memberIds = [];
-        if (e.recording_id) {
-          const { data: r } = await supabase.from("recordings").select("*").eq("id", e.recording_id).maybeSingle();
-          rec = r;
-          const { data: rm } = await supabase.from("recording_members").select("person_id").eq("recording_id", e.recording_id);
-          memberIds = [...new Set((rm || []).map((x) => resolveAlias(x.person_id, aliasMap)))];
+        if (rec) {
+          // Phase 2 — recording members
+          const { data: rm } = await supabase.from("recording_members").select("person_id").eq("recording_id", rec.id);
+          memberIds = [...new Set((rm || []).map((r) => resolveAlias(r.person_id, aliasMap)))];
         }
+        if (profRes.data?.home_currency) setHomeCurrency(profRes.data.home_currency);
         setRecording(rec);
+        if (rec?.base_currency) setCurrency(rec.base_currency);
         setMembers(memberIds);
-        setPaidBy(resolveAlias(e.paid_by, aliasMap));
-        setCurrency(e.currency || rec?.base_currency || hc);
-        setAmount(String(e.total_amount ?? "0"));
-        setTitle(e.title || "");
-        if (e.exchange_rate) setRate(String(e.exchange_rate));
-        setKeypadOpen(false);
-
-        const { data: its } = await supabase.from("expense_items").select("*").eq("expense_id", editExpenseId).order("is_rest", { ascending: false }).order("sort_order");
-        const list = its || [];
-        const ids = list.map((i) => i.id);
-        const { data: ims } = ids.length
-          ? await supabase.from("expense_item_members").select("item_id, person_id").in("item_id", ids)
-          : { data: [] };
-        const byItem = {};
-        (ims || []).forEach((m) => { (byItem[m.item_id] = byItem[m.item_id] || []).push(resolveAlias(m.person_id, aliasMap)); });
-        const rest = list.find((i) => i.is_rest);
-        const carve = list.filter((i) => !i.is_rest);
-        if (carve.length) {
-          setSliced(true);
-          const restSet = new Set(byItem[rest?.id] || []);
-          setRestMembers(restSet);
-          setItems(carve.map((it) => ({ id: ++idRef.current, label: it.label || "", amount: String(it.amount), members: new Set(byItem[it.id] || []) })));
-          setWhosIn(new Set([...restSet, ...carve.flatMap((it) => byItem[it.id] || [])]));
-        } else {
-          setSplitIds(new Set(byItem[rest?.id] || (self ? [self.id] : [])));
-        }
-        return;
+        setSplitIds(new Set(memberIds.length ? memberIds : self ? [self.id] : []));
+        setPaidBy(self?.id || null);
+      } finally {
+        setLoading(false);
       }
-
-      // ── new expense: smart defaults from the live/forced recording ──
-      const aliasMap = buildAliasMap(people);
-      const { data: recs } = forceRecordingId
-        ? await supabase.from("recordings").select("*").eq("id", forceRecordingId).limit(1)
-        : await supabase.from("recordings").select("*").eq("is_active", true).limit(1);
-      const rec = recs?.[0] || null;
-      setRecording(rec);
-      let memberIds = [];
-      if (rec) {
-        const { data: rm } = await supabase.from("recording_members").select("person_id").eq("recording_id", rec.id);
-        memberIds = [...new Set((rm || []).map((r) => resolveAlias(r.person_id, aliasMap)))];
-        if (rec.base_currency) setCurrency(rec.base_currency);
-      }
-      setMembers(memberIds);
-      setSplitIds(new Set(memberIds.length ? memberIds : self ? [self.id] : []));
-      setPaidBy(self?.id || null);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [self?.id, editExpenseId]);
@@ -393,8 +407,11 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
         </div>
       </div>
 
-      {/* body */}
-      <div style={{ flex: 1, overflowY: "auto" }}>
+      {/* body — gated so the form appears in one pass once loaded */}
+      {loading ? (
+        <div style={{ flex: 1 }} />
+      ) : (
+      <div style={{ flex: 1, overflowY: "auto", animation: "fadeIn 160ms var(--ease)" }}>
         {/* currency + exchange rate — contained card, shown only for a foreign currency */}
         {foreign && (
           <div style={{ margin: "10px 20px 6px", background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "var(--r-card)", overflow: "hidden" }}>
@@ -564,6 +581,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
           <span className="mono" style={{ fontSize: 10.5, color: "var(--text-4)" }}>logged · {ts}</span>
         </div>
       </div>
+      )}
 
       {/* keypad */}
       {keypadOpen && (

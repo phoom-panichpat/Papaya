@@ -155,7 +155,12 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("home");
+  // Lazy-mount + keep-mounted: a tab mounts on first visit, then stays mounted
+  // (hidden via CSS) so revisits are instant with no refetch.
+  const [visited, setVisited] = useState({ home: true });
+  useEffect(() => { setVisited((v) => (v[tab] ? v : { ...v, [tab]: true })); }, [tab]);
   const [people, setPeople] = useState([]);
+  const [homeCurrency, setHomeCurrency] = useState("THB");
   const [stack, setStack] = useState([]); // overlay stack: full-screen pushed screens
   const [stub, setStub] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -194,6 +199,18 @@ export default function App() {
 
   useEffect(() => { loadPeople(); }, [loadPeople]);
 
+  // Home currency lives here, loaded once, so screens don't each re-fetch the
+  // profile row on every open. Reloaded on popOverlay(changed) — Settings is the
+  // only writer. (Other screens still fetch it themselves; folding them onto this
+  // prop belongs with the currency-invariant work — see CLAUDE.md §8.)
+  const loadProfile = useCallback(async () => {
+    if (!session) return;
+    const { data } = await supabase.from("profiles").select("home_currency").maybeSingle();
+    if (data?.home_currency) setHomeCurrency(data.home_currency);
+  }, [session]);
+
+  useEffect(() => { loadProfile(); }, [loadProfile]);
+
   if (loading) return <Splash />;
   if (!session) return <AuthScreen />;
 
@@ -204,6 +221,7 @@ export default function App() {
     if (changed) {
       setRefreshKey((k) => k + 1);
       loadPeople();
+      loadProfile();
     }
   }
   // Archive/unarchive close: refresh the underlying screen, then pop once it's
@@ -221,27 +239,35 @@ export default function App() {
   return (
     <div style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-        {tab === "home" && (
-          <Home
-            people={people}
-            refreshKey={refreshKey}
-            onLoaded={handleLoaded}
-            onNewExpense={() => push({ type: "expense" })}
-            onOpenExpense={openExpense}
-            onOpenRecording={(id) => push({ type: "recordingDetail", id })}
-            onNewRecording={() => push({ type: "createRecording" })}
-            onOpenSettings={() => push({ type: "settings" })}
-          />
+        {visited.home && (
+          <div style={{ position: "absolute", inset: 0, display: tab === "home" ? "block" : "none" }}>
+            <Home
+              people={people}
+              refreshKey={refreshKey}
+              onLoaded={tab === "home" ? handleLoaded : undefined}
+              onNewExpense={() => push({ type: "expense" })}
+              onOpenExpense={openExpense}
+              onOpenRecording={(id) => push({ type: "recordingDetail", id })}
+              onNewRecording={() => push({ type: "createRecording" })}
+              onOpenSettings={() => push({ type: "settings" })}
+            />
+          </div>
         )}
-        {tab === "people" && (
-          <People
-            people={people}
-            refreshKey={refreshKey}
-            onChanged={() => { loadPeople(); setRefreshKey((k) => k + 1); }}
-            onOpenPerson={(id) => push({ type: "personDetail", id })}
-          />
+        {visited.people && (
+          <div style={{ position: "absolute", inset: 0, display: tab === "people" ? "block" : "none" }}>
+            <People
+              people={people}
+              refreshKey={refreshKey}
+              onChanged={() => { loadPeople(); setRefreshKey((k) => k + 1); }}
+              onOpenPerson={(id) => push({ type: "personDetail", id })}
+            />
+          </div>
         )}
-        {tab === "settlement" && <Settlement people={people} refreshKey={refreshKey} onLoaded={handleLoaded} onOpenExpense={openExpense} onOpenRecording={(id) => push({ type: "recordingDetail", id })} />}
+        {visited.settlement && (
+          <div style={{ position: "absolute", inset: 0, display: tab === "settlement" ? "block" : "none" }}>
+            <Settlement people={people} refreshKey={refreshKey} onLoaded={tab === "settlement" ? handleLoaded : undefined} onOpenExpense={openExpense} onOpenRecording={(id) => push({ type: "recordingDetail", id })} />
+          </div>
+        )}
       </div>
       <BottomNav tab={tab} setTab={setTab} />
 
@@ -277,7 +303,7 @@ export default function App() {
             />
           );
         else if (o.type === "recordSettle") el = <RecordSettleSheet recordingId={o.id} people={people} onClose={() => popOverlay(true)} />;
-        else if (o.type === "settings") el = <Settings people={people} onClose={popOverlay} />;
+        else if (o.type === "settings") el = <Settings people={people} email={session.user?.email || ""} homeCurrency={homeCurrency} onClose={popOverlay} />;
         else if (o.type === "personDetail")
           el = (
             <PersonDetail

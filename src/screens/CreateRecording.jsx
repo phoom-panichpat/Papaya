@@ -39,32 +39,41 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
   const [currencyOpen, setCurrencyOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => { setLocalPeople(people.filter((p) => !p.merged_into_id)); }, [people]);
   const self = localPeople.find((p) => p.is_self);
 
   useEffect(() => {
     (async () => {
-      const { data: prof } = await supabase.from("profiles").select("home_currency").maybeSingle();
-      const hc = prof?.home_currency || "THB";
-      setHomeCurrency(hc);
-      if (editRecordingId) {
-        const { data: r } = await supabase.from("recordings").select("*").eq("id", editRecordingId).maybeSingle();
-        if (r) {
-          setName(r.name || "");
+      try {
+        const [profResult, recResult] = await Promise.all([
+          supabase.from("profiles").select("home_currency").maybeSingle(),
+          editRecordingId ? supabase.from("recordings").select("*").eq("id", editRecordingId).maybeSingle() : null,
+        ]);
+        const { data: prof } = profResult;
+        const hc = prof?.home_currency || "THB";
+        let nameVal = "", customCur = false, curVal = hc, rateVal = "", memberSet = new Set();
+        if (editRecordingId && recResult?.data) {
+          const r = recResult.data;
+          nameVal = r.name || "";
           if (r.base_currency) {
-            setCustomCurrency(true);
-            setCurrency(r.base_currency);
-            if (r.exchange_rate != null) setRate(String(r.exchange_rate));
-          } else {
-            setCurrency(hc);
+            customCur = true;
+            curVal = r.base_currency;
+            if (r.exchange_rate != null) rateVal = String(r.exchange_rate);
           }
           const aliasMap = buildAliasMap(people);
           const { data: rm } = await supabase.from("recording_members").select("person_id").eq("recording_id", editRecordingId);
-          setMemberIds(new Set((rm || []).map((x) => resolveAlias(x.person_id, aliasMap))));
+          memberSet = new Set((rm || []).map((x) => resolveAlias(x.person_id, aliasMap)));
         }
-      } else {
-        setCurrency(hc);
+        setHomeCurrency(hc);
+        setName(nameVal);
+        setCustomCurrency(customCur);
+        setCurrency(curVal);
+        setRate(rateVal);
+        setMemberIds(memberSet);
+      } finally {
+        setLoading(false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -156,78 +165,82 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
         <button onClick={save} disabled={!canSave} style={{ height: 32, padding: "0 17px", borderRadius: 999, background: "var(--accent)", color: "#fff", fontSize: 13, fontWeight: 600, opacity: canSave ? 1 : 0.4 }}>{edit ? "Save" : "Create"}</button>
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto" }}>
-        {/* name */}
-        <div style={{ padding: "20px 20px 8px" }}>
-          <div className="legend">Name</div>
-          <input
-            autoFocus
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Busan weekend, Tuesday dinners…"
-            style={{ width: "100%", marginTop: 10, height: 44, background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: 12, fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em", outline: "none", padding: "0 14px" }}
-          />
-        </div>
+      {loading ? (
+        <div style={{ flex: 1 }} />
+      ) : (
+        <div style={{ flex: 1, overflowY: "auto", animation: "fadeIn 160ms var(--ease)" }}>
+          {/* name */}
+          <div style={{ padding: "20px 20px 8px" }}>
+            <div className="legend">Name</div>
+            <input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Busan weekend, Tuesday dinners…"
+              style={{ width: "100%", marginTop: 10, height: 44, background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: 12, fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em", outline: "none", padding: "0 14px" }}
+            />
+          </div>
 
-        {/* who's in (party) */}
-        <div style={{ ...row, cursor: "pointer", marginTop: 12 }} onClick={() => setPicker(true)}>
-          <span style={{ ...label, color: "var(--text-2)" }}>Who's in</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {memberIds.size ? <Cluster ids={[...memberIds]} people={localPeople} /> : <span style={{ fontSize: 14, color: "var(--text-3)" }}>Just you</span>}
-            <span className="mono" style={{ fontSize: 9, color: "var(--text-4)" }}>›</span>
-          </span>
-        </div>
-        <div style={{ padding: "0 20px 6px" }}>
-          <span className="mono" style={{ fontSize: 10, color: "var(--text-4)" }}>optional — anyone in an expense here joins automatically</span>
-        </div>
-
-        {/* different currency */}
-        <div style={{ ...row, cursor: "pointer" }} onClick={() => { if (customCurrency) { setCustomCurrency(false); } else { setCustomCurrency(true); setCurrencyOpen(true); } }}>
-          <span style={{ ...label, color: "var(--text-2)" }}>Different currency</span>
-          {customCurrency ? (
-            <span onClick={(e) => { e.stopPropagation(); setCurrencyOpen(true); }} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <span className="mono" style={{ fontSize: 12, letterSpacing: "0.08em", color: "var(--text)" }}>{currency}</span>
-              <span className="mono" style={{ fontSize: 9, color: "var(--text-4)" }}>⌄</span>
+          {/* who's in (party) */}
+          <div style={{ ...row, cursor: "pointer", marginTop: 12 }} onClick={() => setPicker(true)}>
+            <span style={{ ...label, color: "var(--text-2)" }}>Who's in</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {memberIds.size ? <Cluster ids={[...memberIds]} people={localPeople} /> : <span style={{ fontSize: 14, color: "var(--text-3)" }}>Just you</span>}
+              <span className="mono" style={{ fontSize: 9, color: "var(--text-4)" }}>›</span>
             </span>
-          ) : (
-            <span style={{ fontSize: 14, color: "var(--text-3)" }}>Uses {homeCurrency}</span>
+          </div>
+          <div style={{ padding: "0 20px 6px" }}>
+            <span className="mono" style={{ fontSize: 10, color: "var(--text-4)" }}>optional — anyone in an expense here joins automatically</span>
+          </div>
+
+          {/* different currency */}
+          <div style={{ ...row, cursor: "pointer" }} onClick={() => { setCustomCurrency(true); setCurrencyOpen(true); }}>
+            <span style={{ ...label, color: "var(--text-2)" }}>Different currency</span>
+            {customCurrency ? (
+              <span onClick={(e) => { e.stopPropagation(); setCurrencyOpen(true); }} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <span className="mono" style={{ fontSize: 12, letterSpacing: "0.08em", color: "var(--text)" }}>{currency}</span>
+                <span className="mono" style={{ fontSize: 9, color: "var(--text-4)" }}>⌄</span>
+              </span>
+            ) : (
+              <span style={{ fontSize: 14, color: "var(--text-3)" }}>Uses {homeCurrency}</span>
+            )}
+          </div>
+
+          {/* exchange rate for foreign recording */}
+          {foreign && (
+            <div style={{ ...row }}>
+              <span style={{ ...label, color: "var(--text-2)" }}>Exchange rate</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>1 {currency} =</span>
+                <input
+                  value={rate}
+                  onChange={(e) => setRate(e.target.value.replace(/[^0-9.]/g, ""))}
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  style={{ width: 76, height: 30, textAlign: "right", background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: 8, fontFamily: "var(--font-mono)", fontSize: 13, outline: "none", padding: "0 8px" }}
+                />
+                <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>{homeCurrency}</span>
+              </span>
+            </div>
+          )}
+
+          {/* start recording now (create-only) */}
+          {!edit && (
+            <div style={{ ...row }}>
+              <span>
+                <span style={label}>Start recording now</span>
+                <div className="mono" style={{ fontSize: 10, color: "var(--text-4)", marginTop: 3 }}>new expenses file into this one</div>
+              </span>
+              <span
+                onClick={() => setStartNow((v) => !v)}
+                style={{ display: "flex", alignItems: "center", width: 48, height: 27, border: "1px solid var(--hairline)", borderRadius: "var(--r-toggle)", background: "var(--bg)", padding: "0 3px", cursor: "pointer", flex: "none" }}
+              >
+                <span style={{ width: 20, height: 20, borderRadius: "50%", background: startNow ? "var(--accent)" : "var(--knob-off)", transform: `translateX(${startNow ? 20 : 0}px)`, transition: "transform 170ms var(--ease), background 170ms ease" }} />
+              </span>
+            </div>
           )}
         </div>
-
-        {/* exchange rate for foreign recording */}
-        {foreign && (
-          <div style={{ ...row }}>
-            <span style={{ ...label, color: "var(--text-2)" }}>Exchange rate</span>
-            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>1 {currency} =</span>
-              <input
-                value={rate}
-                onChange={(e) => setRate(e.target.value.replace(/[^0-9.]/g, ""))}
-                inputMode="decimal"
-                placeholder="0.00"
-                style={{ width: 76, height: 30, textAlign: "right", background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: 8, fontFamily: "var(--font-mono)", fontSize: 13, outline: "none", padding: "0 8px" }}
-              />
-              <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>{homeCurrency}</span>
-            </span>
-          </div>
-        )}
-
-        {/* start recording now (create-only) */}
-        {!edit && (
-          <div style={{ ...row }}>
-            <span>
-              <span style={label}>Start recording now</span>
-              <div className="mono" style={{ fontSize: 10, color: "var(--text-4)", marginTop: 3 }}>new expenses file into this one</div>
-            </span>
-            <span
-              onClick={() => setStartNow((v) => !v)}
-              style={{ display: "flex", alignItems: "center", width: 48, height: 27, border: "1px solid var(--hairline)", borderRadius: "var(--r-toggle)", background: "var(--bg)", padding: "0 3px", cursor: "pointer", flex: "none" }}
-            >
-              <span style={{ width: 20, height: 20, borderRadius: "50%", background: startNow ? "var(--accent)" : "var(--knob-off)", transform: `translateX(${startNow ? 20 : 0}px)`, transition: "transform 170ms var(--ease), background 170ms ease" }} />
-            </span>
-          </div>
-        )}
-      </div>
+      )}
 
       {/* currency dropdown */}
       {currencyOpen && (
@@ -235,6 +248,10 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
           <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", left: 0, right: 0, bottom: 0, maxHeight: "70%", overflowY: "auto", background: "var(--surface)", borderTop: "1px solid var(--hairline)", borderRadius: "var(--r-sheet) var(--r-sheet) 0 0", padding: "14px 0 24px", animation: "sheetIn 240ms var(--ease)" }}>
             <div style={{ width: 36, height: 3, borderRadius: 2, background: "#DCD6C6", margin: "0 auto 8px" }} />
             <div className="legend" style={{ padding: "6px 20px 4px" }}>Recording currency</div>
+            <button onClick={() => { setCustomCurrency(false); setCurrencyOpen(false); }} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderTop: "1px solid var(--hairline-3)" }}>
+              <span style={{ fontSize: 15 }}>Same as home · {homeCurrency}</span>
+              <span style={{ fontSize: 16, color: "var(--text-2)" }}>{currencySymbol(homeCurrency)}{!customCurrency ? "  ✓" : ""}</span>
+            </button>
             {CURRENCIES.map((c) => (
               <button key={c} onClick={() => { setCurrency(c); setCurrencyOpen(false); if (c !== homeCurrency) setRate(localStorage.getItem(`papaya:rate:${c}:${homeCurrency}`) || "1"); }} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderTop: "1px solid var(--hairline-3)" }}>
                 <span style={{ fontSize: 15 }}>{c}</span>

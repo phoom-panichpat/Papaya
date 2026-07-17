@@ -27,14 +27,13 @@ export default function RecordSettleSheet({ recordingId, people, onClose }) {
   }, [person]);
 
   const load = useCallback(async () => {
-    const { data: prof } = await supabase.from("profiles").select("home_currency").maybeSingle();
+    const [{ data: prof }, { data: r }, data] = await Promise.all([
+      supabase.from("profiles").select("home_currency").maybeSingle(),
+      supabase.from("recordings").select("*").eq("id", recordingId).maybeSingle(),
+      loadSettlementData(recordingId),
+    ]);
     const hc = prof?.home_currency || "THB";
-    setHome(hc);
-    const { data: r } = await supabase.from("recordings").select("*").eq("id", recordingId).maybeSingle();
-    setRec(r);
-    const data = await loadSettlementData(recordingId); // scoped: only this record's tree
-    setContribs(buildContributions(data, hc));
-    setLoading(false);
+    setHome(hc); setRec(r); setContribs(buildContributions(data, hc)); setLoading(false);
   }, [recordingId]);
 
   useEffect(() => { load(); }, [load]);
@@ -69,7 +68,7 @@ export default function RecordSettleSheet({ recordingId, people, onClose }) {
       const net = (p.sums[`${x}>${y}`] || 0) - (p.sums[`${y}>${x}`] || 0);
       const [from, to] = net >= 0 ? [x, y] : [y, x];
       return { from, to, amount: Math.abs(net), shares: p.shares, paid: p.settled === p.total };
-    }).filter((t) => t.amount > 0.005).sort((a, b) => (a.paid - b.paid) || (b.amount - a.amount));
+    }).filter((t) => t.amount > 0.005).sort((a, b) => b.amount - a.amount);
   })();
 
   const anyUnpaid = transfers.some((t) => !t.paid);
