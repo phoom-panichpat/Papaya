@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "./lib/supabase";
 import Home from "./screens/Home";
 import ExpenseForm from "./screens/ExpenseForm";
@@ -159,6 +159,20 @@ export default function App() {
   const [stack, setStack] = useState([]); // overlay stack: full-screen pushed screens
   const [stub, setStub] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Archive pop is deferred: after an archive/unarchive write, we bump refreshKey
+  // (underlying screen re-fetches) but keep the detail mounted (showing its busy
+  // state) until that screen reports fresh, THEN pop — so the revealed list is
+  // already correct (no "item lingers then vanishes" flash). loadedTick ticks
+  // each time a tab screen finishes loading; the effect pops if one is pending.
+  const pendingPop = useRef(false);
+  const [loadedTick, setLoadedTick] = useState(0);
+  const handleLoaded = useCallback(() => setLoadedTick((t) => t + 1), []);
+  useEffect(() => {
+    if (pendingPop.current) {
+      pendingPop.current = false;
+      setStack((s) => s.slice(0, -1));
+    }
+  }, [loadedTick]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -192,6 +206,17 @@ export default function App() {
       loadPeople();
     }
   }
+  // Archive/unarchive close: refresh the underlying screen, then pop once it's
+  // fresh (see pendingPop above). The detail stays mounted (busy) until then.
+  // Safety net: if no screen reports loaded within 1.5s, pop anyway.
+  function archiveClose() {
+    setRefreshKey((k) => k + 1);
+    loadPeople();
+    pendingPop.current = true;
+    setTimeout(() => {
+      if (pendingPop.current) { pendingPop.current = false; setStack((s) => s.slice(0, -1)); }
+    }, 1500);
+  }
 
   return (
     <div style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>
@@ -200,6 +225,7 @@ export default function App() {
           <Home
             people={people}
             refreshKey={refreshKey}
+            onLoaded={handleLoaded}
             onNewExpense={() => push({ type: "expense" })}
             onOpenExpense={openExpense}
             onOpenRecording={(id) => push({ type: "recordingDetail", id })}
@@ -215,7 +241,7 @@ export default function App() {
             onOpenPerson={(id) => push({ type: "personDetail", id })}
           />
         )}
-        {tab === "settlement" && <Settlement people={people} refreshKey={refreshKey} onOpenExpense={openExpense} onOpenRecording={(id) => push({ type: "recordingDetail", id })} />}
+        {tab === "settlement" && <Settlement people={people} refreshKey={refreshKey} onLoaded={handleLoaded} onOpenExpense={openExpense} onOpenRecording={(id) => push({ type: "recordingDetail", id })} />}
       </div>
       <BottomNav tab={tab} setTab={setTab} />
 
@@ -235,7 +261,8 @@ export default function App() {
               onOpenExpense={openExpense}
               onSettle={() => push({ type: "recordSettle", id: o.id })}
               onEdit={(id) => push({ type: "createRecording", editRecordingId: id })}
-              onClose={() => popOverlay(false)}
+              onArchiveClose={archiveClose}
+              onClose={popOverlay}
             />
           );
         else if (o.type === "expenseDetail")
@@ -245,6 +272,7 @@ export default function App() {
               people={people}
               refreshKey={refreshKey}
               onEdit={(id) => push({ type: "expense", editExpenseId: id })}
+              onArchiveClose={archiveClose}
               onClose={popOverlay}
             />
           );

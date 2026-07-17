@@ -37,7 +37,7 @@ function Money({ n, cur, color, style = {} }) {
 }
 
 // ── the global tab: direct pairwise balances between You and each person ──
-export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRecording }) {
+export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRecording, onLoaded }) {
   const [home, setHome] = useState("THB");
   const [contribs, setContribs] = useState([]);
   const [data, setData] = useState(null);
@@ -45,7 +45,6 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
   const [loading, setLoading] = useState(true);
   const [openPid, setOpenPid] = useState(null);
   const [openEvent, setOpenEvent] = useState(null);
-  const [snack, setSnack] = useState(null); // { shares }
   const [saveErr, setSaveErr] = useState(false);
   const [histSeg, setHistSeg] = useState("settled"); // settled | records | expenses
   const [histQ, setHistQ] = useState("");
@@ -63,7 +62,8 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
     setData(d);
     setContribs(buildContributions(d, home));
     setLoading(false);
-  }, [home]);
+    onLoaded?.(); // tell App this screen is fresh (used to defer an archive pop)
+  }, [home, onLoaded]);
 
   // archived loose expenses → History (settled ≠ archived; archiving is deliberate, like records)
   const archivedLoose = (data?.expenses || [])
@@ -128,7 +128,6 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
   function commitSettle(rows) {
     const at = new Date().toISOString();
     setContribs((cs) => patchContribsSettled(cs, rows, at));
-    setSnack({ shares: rows });
     setOpenPid(null);
     background(() => settleShares(rows, at));
   }
@@ -139,20 +138,6 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
     setOpenEvent(null);
     background(() => unsettleShares(rows));
   }
-
-  function undo() {
-    if (!snack) return;
-    const rows = snack.shares;
-    setSnack(null);
-    setContribs((cs) => patchContribsSettled(cs, rows, null));
-    background(() => unsettleShares(rows));
-  }
-
-  useEffect(() => {
-    if (!snack) return;
-    const t = setTimeout(() => setSnack(null), 6000);
-    return () => clearTimeout(t);
-  }, [snack]);
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--bg)", position: "relative" }}>
@@ -358,14 +343,6 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
       )}
 
       {saveErr && <SaveError onDone={() => setSaveErr(false)} />}
-
-      {/* undo snackbar */}
-      {snack && (
-        <div style={{ position: "absolute", left: 16, right: 16, bottom: 20, background: "var(--text)", color: "var(--bg)", borderRadius: 14, padding: "13px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", zIndex: 60, animation: "sheetIn 220ms var(--ease)" }}>
-          <span style={{ fontSize: 13.5 }}>Marked settled</span>
-          <button onClick={undo} className="mono" style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--bg)", borderBottom: "1px solid rgba(243,240,233,0.5)", paddingBottom: 1 }}>Undo</button>
-        </div>
-      )}
     </div>
   );
 }
@@ -482,7 +459,7 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
 // ── settled-event detail: the shares behind one settlement, + partial un-settle ──
 function EventSheet({ event, self, home, nameOf, onClose, onUnsettle }) {
   function keyOf(c) { return `${c.itemId}:${c.personId}`; }
-  const [ticked, setTicked] = useState(() => new Set(event.contribs.map(keyOf)));
+  const [ticked, setTicked] = useState(() => new Set()); // start unchecked — un-settling is deliberate
   function toggle(c) {
     setTicked((s) => { const n = new Set(s); const k = keyOf(c); n.has(k) ? n.delete(k) : n.add(k); return n; });
   }
@@ -534,7 +511,7 @@ function EventSheet({ event, self, home, nameOf, onClose, onUnsettle }) {
             const on = ticked.has(k);
             return (
               <button key={k} onClick={() => toggle(c)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, padding: "12px 2px", borderBottom: "1px solid var(--hairline-3)", textAlign: "left" }}>
-                <span style={{ width: 22, height: 22, borderRadius: 7, border: on ? "none" : "1.5px solid var(--hairline)", background: on ? "var(--settled)" : "var(--bg)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flex: "none" }}>{on ? "✓" : ""}</span>
+                <span style={{ width: 22, height: 22, borderRadius: 7, border: on ? "none" : "1.5px solid var(--hairline)", background: on ? "var(--danger)" : "var(--bg)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flex: "none" }}>{on ? "✓" : ""}</span>
                 <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
                   <span style={{ fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.expense.title}</span>
                   <span className="mono" style={{ fontSize: 9.5, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-3)" }}>
@@ -555,7 +532,7 @@ function EventSheet({ event, self, home, nameOf, onClose, onUnsettle }) {
           <button
             onClick={unsettle}
             disabled={!tickedContribs.length}
-            style={{ width: "100%", height: 48, borderRadius: 14, background: "transparent", border: "1.5px solid var(--hairline)", color: "var(--text-2)", fontSize: 15, fontWeight: 600, opacity: tickedContribs.length ? 1 : 0.4 }}
+            style={{ width: "100%", height: 48, borderRadius: 14, background: "transparent", border: "1.5px solid var(--danger)", color: "var(--danger)", fontSize: 15, fontWeight: 600, opacity: tickedContribs.length ? 1 : 0.4 }}
           >
             {`Un-settle ${tickedContribs.length}`}
           </button>

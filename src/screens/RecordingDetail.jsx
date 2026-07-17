@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol, formatMoney, padIndex } from "../lib/format";
 import { statusForExpense, toHome, buildAliasMap, resolveAlias } from "../lib/balances";
 import DualMoney from "../components/DualMoney";
+import SaveError from "../components/SaveError";
 
 function monthDay(d) {
   return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -24,12 +25,15 @@ function SettledPill({ status }) {
   );
 }
 
-export default function RecordingDetail({ recordingId, people, onAddExpense, onOpenExpense, onSettle, onEdit, onClose, refreshKey }) {
+export default function RecordingDetail({ recordingId, people, onAddExpense, onOpenExpense, onSettle, onEdit, onClose, onArchiveClose, refreshKey }) {
   const [rec, setRec] = useState(null);
   const [logs, setLogs] = useState([]);
   const [memberIds, setMemberIds] = useState([]);
   const [home, setHome] = useState("THB");
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [saveErr, setSaveErr] = useState(false);
+  const archiving = useRef(false); // skip self-reload during archive-close so the button doesn't flip before the pop
 
   const aliasMap = useMemo(() => buildAliasMap(people), [people]);
 
@@ -39,14 +43,14 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
   }, [people, aliasMap]);
 
   const load = useCallback(async () => {
-    const { data: prof } = await supabase.from("profiles").select("home_currency").maybeSingle();
-    setHome(prof?.home_currency || "THB");
-    const { data: r } = await supabase.from("recordings").select("*").eq("id", recordingId).maybeSingle();
-    setRec(r);
-    const { data: rm } = await supabase.from("recording_members").select("person_id").eq("recording_id", recordingId);
-    setMemberIds([...new Set((rm || []).map((x) => resolveAlias(x.person_id, aliasMap)))]);
-    const { data: exps } = await supabase.from("expenses").select("*").eq("recording_id", recordingId).order("created_at", { ascending: true });
-    const expList = exps || [];
+    // 4 independent queries in parallel; only items→members must stay sequential.
+    const [profRes, recRes, rmRes, expRes] = await Promise.all([
+      supabase.from("profiles").select("home_currency").maybeSingle(),
+      supabase.from("recordings").select("*").eq("id", recordingId).maybeSingle(),
+      supabase.from("recording_members").select("person_id").eq("recording_id", recordingId),
+      supabase.from("expenses").select("*").eq("recording_id", recordingId).order("created_at", { ascending: true }),
+    ]);
+    const expList = expRes.data || [];
     if (expList.length) {
       const ids = expList.map((e) => e.id);
       const { data: its } = await supabase.from("expense_items").select("id, expense_id").in("expense_id", ids);
@@ -65,15 +69,23 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
         e.status = statusForExpense(byExp[e.id] || [], e.paid_by, nameOf);
       });
     }
+    // set all state together at the end → one render, no progressive shift
+    setHome(profRes.data?.home_currency || "THB");
+    setRec(recRes.data);
+    setMemberIds([...new Set((rmRes.data || []).map((x) => resolveAlias(x.person_id, aliasMap)))]);
     setLogs(expList);
     setLoading(false);
   }, [recordingId, nameOf, aliasMap]);
 
-  useEffect(() => { load(); }, [load, refreshKey]);
+  useEffect(() => { if (archiving.current) return; load(); }, [load, refreshKey]);
 
   async function toggleArchive() {
-    await supabase.from("recordings").update({ archived_at: rec?.archived_at ? null : new Date().toISOString() }).eq("id", recordingId);
-    onClose(true);
+    if (busy) return;
+    setBusy(true);
+    const { error } = await supabase.from("recordings").update({ archived_at: rec?.archived_at ? null : new Date().toISOString() }).eq("id", recordingId);
+    if (error) { setBusy(false); setSaveErr(true); return; } // write failed → stay in the detail so the user can retry
+    archiving.current = true; // don't self-reload on the coming refreshKey bump (would flip the button before the pop)
+    onArchiveClose(); // refresh the underlying list, then pop once it's fresh (detail stays busy meanwhile)
   }
 
   const base = rec?.base_currency || null;
@@ -95,19 +107,23 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
     <div style={{ position: "absolute", inset: 0, background: "var(--bg)", zIndex: 30, display: "flex", flexDirection: "column" }}>
       {/* header */}
       <div style={{ height: 54, flex: "none", display: "flex", alignItems: "center", padding: "0 12px", gap: 8 }}>
-        <button onClick={onClose} style={{ width: 40, height: 40, fontSize: 20, borderRadius: "50%" }}>←</button>
+        <button onClick={() => onClose(false)} style={{ width: 40, height: 40, fontSize: 20, borderRadius: "50%" }}>←</button>
         <div style={{ flex: 1, textAlign: "center" }}>
           <span className="legend">Recording</span>
         </div>
+        {!loading && (
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <button onClick={() => onEdit(recordingId)} className="mono" style={{ height: 40, padding: "0 10px", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)" }}>Edit</button>
           {(allSettled || rec?.archived_at) && (
-            <button onClick={toggleArchive} className="mono" style={{ height: 40, padding: "0 10px", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: rec?.archived_at ? "var(--accent)" : "var(--text-3)" }}>{rec?.archived_at ? "Unarchive" : "Archive"}</button>
+            <button onClick={toggleArchive} disabled={busy} className="mono" style={{ height: 40, padding: "0 10px", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: busy ? "var(--text-4)" : rec?.archived_at ? "var(--accent)" : "var(--text-3)" }}>{rec?.archived_at ? "Unarchive" : "Archive"}</button>
           )}
         </div>
+        )}
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "0 0 40px" }}>
+        {loading ? null : (
+        <div style={{ animation: "fadeIn 160ms ease" }}>
         {/* title block */}
         <div style={{ padding: "8px 24px 20px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
@@ -178,7 +194,9 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
             ))
           )}
         </div>
+        </div>)}
       </div>
+      {saveErr && <SaveError onDone={() => setSaveErr(false)} />}
     </div>
   );
 }

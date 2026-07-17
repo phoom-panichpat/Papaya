@@ -17,7 +17,7 @@ function SettledPill({ settled }) {
   );
 }
 
-export default function ExpenseDetail({ expenseId, people, onClose, onEdit, refreshKey }) {
+export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onArchiveClose, refreshKey }) {
   const [exp, setExp] = useState(null);
   const [items, setItems] = useState([]);
   const [membersByItem, setMembersByItem] = useState({});
@@ -29,6 +29,7 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, refr
   const [dirty, setDirty] = useState(false);        // signal underlying refresh on close
   const [saveErr, setSaveErr] = useState(false);
   const chain = useRef(Promise.resolve());          // serializes background settle writes
+  const archiving = useRef(false);                  // skip self-reload during archive-close so the button doesn't flip before the pop
 
   const aliasMap = useMemo(() => buildAliasMap(people), [people]);
   const canon = (id) => resolveAlias(id, aliasMap);
@@ -61,7 +62,7 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, refr
     setLoading(false);
   }, [expenseId]);
 
-  useEffect(() => { load(); }, [load, refreshKey]);
+  useEffect(() => { if (archiving.current) return; load(); }, [load, refreshKey]);
 
   const cur = exp?.currency || rec?.base_currency || home;
   const recMap = rec ? { [rec.id]: rec } : {};
@@ -132,10 +133,10 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, refr
   async function toggleArchive() {
     if (busy || !exp) return;
     setBusy(true);
-    await supabase.from("expenses").update({ archived_at: exp.archived_at ? null : new Date().toISOString() }).eq("id", expenseId);
-    setBusy(false);
-    setDirty(true);
-    await load();
+    const { error } = await supabase.from("expenses").update({ archived_at: exp.archived_at ? null : new Date().toISOString() }).eq("id", expenseId);
+    if (error) { setBusy(false); setSaveErr(true); return; } // write failed → stay in the detail so the user can retry
+    archiving.current = true; // don't self-reload on the coming refreshKey bump (would flip the button before the pop)
+    onArchiveClose(); // refresh the underlying list, then pop once it's fresh (detail stays busy meanwhile)
   }
 
   const iconBtn = { width: 38, height: 38, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 };
@@ -148,8 +149,8 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, refr
         <button onClick={() => onClose(dirty)} style={{ width: 40, height: 40, fontSize: 20, borderRadius: "50%" }}>←</button>
         <div style={{ flex: 1, textAlign: "center" }}><span className="legend">Expense</span></div>
         <button onClick={() => onEdit(expenseId)} className="mono" style={{ ...iconBtn, width: "auto", padding: "0 12px", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text)" }}>Edit</button>
-        {exp && !exp.recording_id && (fullySettled || exp.archived_at) && (
-          <button onClick={toggleArchive} disabled={busy} className="mono" style={{ ...iconBtn, width: "auto", padding: "0 12px", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: exp.archived_at ? "var(--accent)" : "var(--text-3)", opacity: busy ? 0.5 : 1 }}>{exp.archived_at ? "Unarchive" : "Archive"}</button>
+        {!loading && exp && !exp.recording_id && (fullySettled || exp.archived_at) && (
+          <button onClick={toggleArchive} disabled={busy} className="mono" style={{ ...iconBtn, width: "auto", padding: "0 12px", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: busy ? "var(--text-4)" : exp.archived_at ? "var(--accent)" : "var(--text-3)" }}>{exp.archived_at ? "Unarchive" : "Archive"}</button>
         )}
         <button onClick={() => setConfirmDel(true)} style={{ ...iconBtn, color: "var(--text-3)", fontSize: 16 }}>🗑</button>
       </div>

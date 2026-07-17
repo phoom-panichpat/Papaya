@@ -143,7 +143,7 @@ function recDateLabel(rec) {
 }
 
 // ─── Home screen (merged feed: recordings + loose, search, new recording) ─────
-export default function Home({ people, onNewExpense, onOpenExpense, onOpenRecording, onNewRecording, onOpenSettings, refreshKey }) {
+export default function Home({ people, onNewExpense, onOpenExpense, onOpenRecording, onNewRecording, onOpenSettings, refreshKey, onLoaded }) {
   const [feed, setFeed] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(null);
@@ -192,7 +192,8 @@ export default function Home({ people, onNewExpense, onOpenExpense, onOpenRecord
     setFeed(items);
     setLoading(false);
     setExpanded((cur) => cur ?? (recordings.find((r) => r.is_active)?.id || null));
-  }, [people]);
+    onLoaded?.(); // tell App this screen is fresh (used to defer an archive pop)
+  }, [people, onLoaded]);
 
   useEffect(() => { load(); }, [load, refreshKey]);
 
