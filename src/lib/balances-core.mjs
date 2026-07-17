@@ -4,11 +4,26 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 // Convert an amount in an expense's own currency to the user's home currency.
-// Two hops, each skipped when the currencies already match:
+//
+// `expenses.home_rate` is the expense's OWN native→home rate, pinned when the
+// expense is saved. A debt is frozen in the currency it was incurred in, so a
+// recording's currency must never be able to move it: when the pin is present
+// this is one multiply and the recording is not consulted at all.
+//
+// The live two-hop derivation below is the fallback, kept deliberately for:
+//   (a) rows written before home_rate existed, and
+//   (b) callers passing a SYNTHETIC expense to convert an amount that is
+//       already denominated in a recording's base currency (RecordSettleSheet
+//       does this for transfer totals) — there is no stored row to pin.
+// Its hops are each skipped when the currencies already match:
 //   expense currency → recording base (expenses.exchange_rate)
 //   recording base   → home           (recordings.exchange_rate)
 export function toHome(amount, expense, recMap, homeCurrency) {
   let amt = Number(amount) || 0;
+  // A pin must be a usable positive rate; 0/NaN/negative is corrupt data, and
+  // honouring it would silently zero out or invert real debts. Derive instead.
+  const pinned = Number(expense.home_rate);
+  if (expense.home_rate != null && Number.isFinite(pinned) && pinned > 0) return amt * pinned;
   const rec = expense.recording_id ? recMap[expense.recording_id] : null;
   const baseCur = rec?.base_currency || homeCurrency;
   const expCur = expense.currency || baseCur;
@@ -67,16 +82,25 @@ export function buildContributions(data, homeCurrency) {
     const rec = exp.recording_id ? recMap[exp.recording_id] : null;
     const baseCurrency = rec?.base_currency || homeCurrency;
     const expCur = exp.currency || baseCurrency;
-    let baseAmt = Number(it.amount) || 0;
-    if (expCur !== baseCurrency) baseAmt *= Number(exp.exchange_rate) || 1;
+    const nativeAmt = Number(it.amount) || 0;
+    const homeAmt = toHome(nativeAmt, exp, recMap, homeCurrency);
+    // `base` = the item in the recording's base currency — the ONE shared
+    // currency an in-record settlement is denominated in. Derive it from the
+    // pinned home value rather than through the recording's currency, so that
+    // changing that currency re-denominates the whole record at a consistent
+    // rate instead of rewriting what anyone owes. When the expense is already
+    // in the base currency the conversion is a no-op by definition, so take the
+    // native amount directly and keep it exact (no float round-trip).
+    const recRate = baseCurrency !== homeCurrency ? Number(rec?.exchange_rate) || 1 : 1;
+    const baseAmt = expCur === baseCurrency ? nativeAmt : homeAmt / recRate;
     // group original member rows by CANONICAL person id (dedup merged aliases)
     const groups = {}; // resolvedId -> [member rows]
     rows.forEach((m) => { const r = rid(m.person_id); (groups[r] = groups[r] || []).push(m); });
     const distinct = Object.keys(groups);
     const n = distinct.length; // divisor counts distinct people, not raw rows
-    const native = (Number(it.amount) || 0) / n;
+    const native = nativeAmt / n;
     const base = baseAmt / n;
-    const home = toHome(Number(it.amount) || 0, exp, recMap, homeCurrency) / n;
+    const home = homeAmt / n;
     const currency = expCur;
     distinct.forEach((pid) => {
       if (pid === payer) return; // the payer never owes their own share (post-resolution)

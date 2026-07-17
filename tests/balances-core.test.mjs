@@ -284,6 +284,86 @@ const memberRow = (d, itemId, personId) =>
     statusForExpense([{ person_id: "you", settled_at: null }], "you", nameOf).kind === "settled");
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// THE CURRENCY INVARIANT (locked 2026-07-17 — see CLAUDE.md §8)
+//
+//   A debt is frozen in the currency it was incurred in. A recording's
+//   currency is a DEFAULT for new logs and a display lens — never the pivot
+//   a past debt is re-computed through.
+//
+// Enforced by `expenses.home_rate`: each expense pins its own native→home
+// rate at creation, and toHome reads that pin instead of walking the
+// recording. These tests are the guard on that — they are the reason the
+// column exists, so do not relax them.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Phoom's exact repro: KRW record @0.02, home THB. Taxi ₩10,000 paid by Rui,
+// split with You → You owes ₩5,000 = ฿100. Then the record is switched to
+// USD @33. Before the pin existed this made You owe ฿165,000.
+function makeTaxi({ rec = {}, exp = {} } = {}) {
+  return {
+    people: [{ id: "you", is_self: true }, { id: "rui" }],
+    recordings: [{ id: "trip", base_currency: "KRW", exchange_rate: 0.02, ...rec }],
+    expenses: [{ id: "t1", recording_id: "trip", currency: "KRW", exchange_rate: null, home_rate: 0.02, paid_by: "rui", ...exp }],
+    items: [{ id: "ti", expense_id: "t1", amount: 10000 }],
+    members: [{ item_id: "ti", person_id: "you" }, { item_id: "ti", person_id: "rui" }],
+    settlements: [],
+  };
+}
+const taxiShare = (d) => buildContributions(d, HOME).find((c) => c.debtor === "you");
+
+{
+  const before = taxiShare(makeTaxi());
+  check("invariant: taxi share is ฿100 / ₩5,000 to begin with",
+    approx(before.home, 100) && approx(before.base, 5000) && approx(before.native, 5000));
+
+  // …now change ONLY the recording's currency. Nothing about the expense moves.
+  const after = taxiShare(makeTaxi({ rec: { base_currency: "USD", exchange_rate: 33 } }));
+  check("invariant: changing the record's currency does NOT move the home debt",
+    approx(after.home, before.home));
+  check("invariant: changing the record's currency does NOT move the native debt",
+    approx(after.native, before.native));
+  check("invariant: base re-denominates to the new currency at the SAME real value",
+    approx(after.base, 100 / 33) && approx(after.base * 33, after.home));
+  check("invariant: the settlement currency follows the record",
+    before.baseCurrency === "KRW" && after.baseCurrency === "USD");
+
+  // The bug this column fixes, documented: an UNPINNED row still walks the
+  // recording, so the same currency change inflates the debt 1650×.
+  const unpinned = taxiShare(makeTaxi({ rec: { base_currency: "USD", exchange_rate: 33 }, exp: { home_rate: null } }));
+  check("invariant: an unpinned row is exactly the bug the pin prevents",
+    approx(unpinned.home, 165000));
+
+  // Corrupt pins must not be honoured — silently zeroing a debt is worse than
+  // falling back to the old derivation.
+  check("invariant: a zero/negative pin falls back instead of zeroing the debt",
+    approx(taxiShare(makeTaxi({ exp: { home_rate: 0 } })).home, 100) &&
+    approx(taxiShare(makeTaxi({ exp: { home_rate: -5 } })).home, 100));
+}
+
+// Backfill parity: the migration sets home_rate = toHome(1, …), i.e. today's
+// derived rate. Pinning that value must reproduce today's numbers EXACTLY for
+// every expense shape in the app — this is what makes the migration a no-op.
+{
+  const d = makeData();
+  const recMap = Object.fromEntries(d.recordings.map((r) => [r.id, r]));
+  const parity = d.expenses.every((e) => {
+    const backfilled = toHome(1, e, recMap, HOME); // ← the SQL's formula
+    return approx(toHome(1234, { ...e, home_rate: backfilled }, recMap, HOME),
+                  toHome(1234, e, recMap, HOME), 0.0001);
+  });
+  check("backfill: pinning toHome(1) reproduces today's value for every expense shape", parity);
+
+  const pinnedFixture = { ...d, expenses: d.expenses.map((e) => ({ ...e, home_rate: toHome(1, e, recMap, HOME) })) };
+  const oldCs = buildContributions(d, HOME);
+  const newCs = buildContributions(pinnedFixture, HOME);
+  check("backfill: no contribution's home/base/native moves once pinned",
+    oldCs.length === newCs.length && oldCs.every((o, i) =>
+      approx(o.home, newCs[i].home, 0.0001) &&
+      approx(o.base, newCs[i].base, 0.0001) &&
+      approx(o.native, newCs[i].native, 0.0001)));
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 console.log(`${pass}/${pass + fail} passed${fail ? ` — ${fail} FAILED` : ""}`);
 process.exit(fail ? 1 : 0);

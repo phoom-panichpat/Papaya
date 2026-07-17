@@ -325,7 +325,12 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
     setSaving(true);
     const owner_id = self.owner_id;
     if (foreign && rateNum > 0) localStorage.setItem(`papaya:rate:${currency}:${baseCurrency}`, rate);
-    const fields = { recording_id: recording?.id || null, paid_by: paidBy, title: title.trim() || ts, total_amount: total, currency, exchange_rate: foreign && rateNum > 0 ? rateNum : null };
+    // Pin this expense's own native→home rate. Once saved it's frozen: it is
+    // what every balance reads, so changing the recording's currency later can
+    // never move this debt. Both hops are resolved here, at creation.
+    const expToBase = foreign && rateNum > 0 ? rateNum : 1;
+    const baseToHome = baseCurrency !== homeCurrency ? Number(recording?.exchange_rate) || 1 : 1;
+    const fields = { recording_id: recording?.id || null, paid_by: paidBy, title: title.trim() || ts, total_amount: total, currency, exchange_rate: foreign && rateNum > 0 ? rateNum : null, home_rate: expToBase * baseToHome };
     let exp;
     if (editExpenseId) {
       // editing: update the row and rebuild its split (old items + members cascade-delete)

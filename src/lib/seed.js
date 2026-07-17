@@ -36,7 +36,8 @@ export async function seedDemo() {
       .from("recording_members")
       .insert(members.map((p) => ({ recording_id: rec.id, person_id: p.id, owner_id })));
     for (const e of expenses) {
-      await addExpense(owner_id, rec.id, e.paidBy.id, e.title, e.amount, base_currency, e.members || members);
+      // logged in the record's own currency → the only hop is base→home
+      await addExpense(owner_id, rec.id, e.paidBy.id, e.title, e.amount, base_currency, e.members || members, exchange_rate);
     }
     return rec;
   }
@@ -52,14 +53,16 @@ export async function seedDemo() {
     { title: "Raw fish market", amount: 52000, paidBy: self },
   ]);
 
-  await addExpense(owner_id, null, self.id, "Airport taxi", 18000, "KRW", [self, ana]);
-  await addExpense(owner_id, null, self.id, "Coffee run", 9500, "KRW", [self]);
+  // loose KRW expenses: no record, so the single hop is KRW→home
+  await addExpense(owner_id, null, self.id, "Airport taxi", 18000, "KRW", [self, ana], 0.026);
+  await addExpense(owner_id, null, self.id, "Coffee run", 9500, "KRW", [self], 0.026);
 }
 
-async function addExpense(owner_id, recording_id, paid_by, title, total, currency, members) {
+// home_rate = this expense's native→home rate, pinned at creation (see toHome).
+async function addExpense(owner_id, recording_id, paid_by, title, total, currency, members, home_rate = 1) {
   const { data: exp } = await supabase
     .from("expenses")
-    .insert({ owner_id, recording_id, paid_by, title, total_amount: total, currency })
+    .insert({ owner_id, recording_id, paid_by, title, total_amount: total, currency, home_rate, exchange_rate: recording_id ? null : home_rate })
     .select()
     .single();
   const { data: item } = await supabase

@@ -67,7 +67,11 @@ create table expenses (
   title         text not null,
   total_amount  numeric not null,
   currency      text,     -- null = inherit recording base / home
-  exchange_rate numeric,  -- per-expense override (rare edge case)
+  exchange_rate numeric,  -- expense currency → recording base (pre-fill / edit default)
+  -- THE CURRENCY INVARIANT: this expense's OWN native→home rate, PINNED at
+  -- creation. It is what every balance reads (see toHome), so a recording's
+  -- currency can never retroactively rewrite a debt logged under it.
+  home_rate     numeric,
   archived_at   timestamptz,  -- loose expenses only: null = on Home; set = archived (Settlement → History). Deliberate act; settled ≠ archived.
   created_at    timestamptz default now()
 );
