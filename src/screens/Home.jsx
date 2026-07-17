@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../lib/supabase";
 import { seedDemo } from "../lib/seed";
 import { currencySymbol, formatMoney, padIndex } from "../lib/format";
+import SaveError from "../components/SaveError";
+
+const ARM_TIMEOUT_MS = 5000; // how long an armed REC toggle waits for its confirming tap
 
 // ─── small pieces ────────────────────────────────────────────────────────────
 function Amount({ value, currency }) {
@@ -13,19 +16,23 @@ function Amount({ value, currency }) {
   );
 }
 
-function RecToggle({ live, onClick }) {
+function RecToggle({ live, armed, onClick }) {
   return (
     <span
+      data-rec-toggle
       onClick={onClick}
       style={{
         display: "flex", alignItems: "center", width: 48, height: 27,
-        border: "1px solid var(--hairline)", borderRadius: "var(--r-toggle)",
+        border: `1px solid ${armed ? "var(--accent)" : "var(--hairline)"}`,
+        borderRadius: "var(--r-toggle)",
         background: "var(--bg)", padding: "0 3px", cursor: "pointer", flex: "none",
+        boxShadow: armed ? "0 0 0 2px rgba(232,98,42,0.35)" : "none",
+        transition: "box-shadow 140ms ease, border-color 140ms ease",
       }}
     >
       <span style={{
         width: 20, height: 20, borderRadius: "50%",
-        background: live ? "var(--accent)" : "var(--knob-off)",
+        background: armed || live ? "var(--accent)" : "var(--knob-off)",
         transform: `translateX(${live ? 20 : 0}px)`,
         transition: "transform 170ms var(--ease), background 170ms ease",
       }} />
@@ -42,7 +49,7 @@ function Accordion({ open, children }) {
 }
 
 // ─── recording card ──────────────────────────────────────────────────────────
-function RecordingCard({ rec, expanded, onHeader, onToggle, onLogTap, onOpen }) {
+function RecordingCard({ rec, expanded, onHeader, onToggle, onLogTap, onOpen, armed, onCancelArm }) {
   return (
     <div style={{ background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "var(--r-card)", flex: "none", overflow: "hidden" }}>
       <div
@@ -57,10 +64,29 @@ function RecordingCard({ rec, expanded, onHeader, onToggle, onLogTap, onOpen }) 
           <span className="mono" style={{ fontSize: 10, color: "var(--text-4)", flex: "none" }}>{padIndex(rec.logs.length)}</span>
         </span>
         <span style={{ display: "flex", alignItems: "center", gap: 9, flex: "none" }}>
-          <span className="legend">Rec</span>
-          <RecToggle live={rec.is_active} onClick={(e) => { e.stopPropagation(); onToggle(); }} />
+          {rec.is_active && <span className="legend">Rec</span>}
+          <RecToggle live={rec.is_active} armed={armed} onClick={(e) => { e.stopPropagation(); onToggle(); }} />
         </span>
       </div>
+      <Accordion open={armed}>
+        <div>
+          <div style={{ borderTop: "1px dotted var(--hairline)" }} />
+          <div style={{ padding: "10px 18px", background: "var(--bg)", display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", opacity: 0.5, flex: "none" }} />
+            <span style={{ fontSize: 12.5, color: "var(--text-2)", lineHeight: 1.5 }}>
+              Tap the toggle again to switch the live session here.
+            </span>
+            <span style={{ flex: 1 }} />
+            <span
+              onClick={(e) => { e.stopPropagation(); onCancelArm(); }}
+              className="mono"
+              style={{ fontSize: 9.5, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-3)", cursor: "pointer", borderBottom: "1px solid #C9C3B3", paddingBottom: 1 }}
+            >
+              cancel
+            </span>
+          </div>
+        </div>
+      </Accordion>
       <Accordion open={expanded}>
         <div style={{ padding: "0 18px 14px 18px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0 6px 0" }}>
@@ -147,8 +173,9 @@ export default function Home({ people, onNewExpense, onOpenExpense, onOpenRecord
   const [feed, setFeed] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(null);
-  const [confirm, setConfirm] = useState(null);
+  const [armedId, setArmedId] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [saveErr, setSaveErr] = useState(false);
   const [q, setQ] = useState("");
 
   const load = useCallback(async () => {
@@ -197,23 +224,59 @@ export default function Home({ people, onNewExpense, onOpenExpense, onOpenRecord
 
   useEffect(() => { load(); }, [load, refreshKey]);
 
+  // An armed REC toggle is a pending intent, not a mode: it expires on its own and
+  // any tap elsewhere cancels it, so a stale arm can never turn a later stray tap
+  // into a silent session switch. Capture-phase pointerdown fires before React's
+  // click, so taps on ANY rec toggle are left alone here — otherwise this would
+  // disarm first and the confirming second tap would just re-arm.
+  useEffect(() => {
+    if (!armedId) return;
+    const timer = setTimeout(() => setArmedId(null), ARM_TIMEOUT_MS);
+    const onDown = (e) => { if (!e.target?.closest?.("[data-rec-toggle]")) setArmedId(null); };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => { clearTimeout(timer); document.removeEventListener("pointerdown", onDown, true); };
+  }, [armedId]);
+
   async function setLive(recId, makeLive) {
-    setBusy(true);
+    // Optimistic: update local state instantly — UI is correct on the next render
+    setFeed((prev) =>
+      prev.map((item) => {
+        if (!item.isRec) return item;
+        if (makeLive) {
+          return { ...item, is_active: item.id === recId };
+        } else {
+          return { ...item, is_active: item.id === recId ? false : item.is_active };
+        }
+      })
+    );
+
+    // Background writes in parallel (disjoint rows)
     if (makeLive) {
-      await supabase.from("recordings").update({ is_active: false }).neq("id", recId);
-      await supabase.from("recordings").update({ is_active: true }).eq("id", recId);
+      const [r1, r2] = await Promise.all([
+        supabase.from("recordings").update({ is_active: false }).neq("id", recId),
+        supabase.from("recordings").update({ is_active: true }).eq("id", recId),
+      ]);
+      if (r1.error || r2.error) {
+        setSaveErr(true);
+        await load();
+      }
     } else {
-      await supabase.from("recordings").update({ is_active: false }).eq("id", recId);
+      const r = await supabase.from("recordings").update({ is_active: false }).eq("id", recId);
+      if (r.error) {
+        setSaveErr(true);
+        await load();
+      }
     }
-    await load();
-    setBusy(false);
   }
 
   function onToggle(rec) {
-    if (busy) return;
     const currentLive = feed.find((f) => f.isRec && f.is_active);
-    if (rec.is_active) return setLive(rec.id, false);
-    if (currentLive) { setConfirm({ fromName: currentLive.name, toId: rec.id, toName: rec.name }); return; }
+    if (rec.is_active) { setLive(rec.id, false); return; }
+    if (currentLive) {
+      if (armedId === rec.id) { setLive(rec.id, true); setExpanded(rec.id); setArmedId(null); return; }
+      setArmedId(rec.id);
+      return;
+    }
     setLive(rec.id, true);
     setExpanded(rec.id);
   }
@@ -292,6 +355,8 @@ export default function Home({ people, onNewExpense, onOpenExpense, onOpenRecord
                 onToggle={() => onToggle(item)}
                 onLogTap={(log) => onOpenExpense(log.id)}
                 onOpen={() => onOpenRecording(item.id)}
+                armed={armedId === item.id}
+                onCancelArm={() => setArmedId(null)}
               />
             ) : (
               <LooseRow
@@ -318,20 +383,7 @@ export default function Home({ people, onNewExpense, onOpenExpense, onOpenRecord
         <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="var(--bg)" strokeWidth="1.8" strokeLinecap="round"><path d="M10 3.5v13M3.5 10h13" /></svg>
       </div>
 
-      {/* switch-confirm dialog */}
-      {confirm && (
-        <div onClick={() => setConfirm(null)} style={{ position: "absolute", inset: 0, background: "var(--scrim)", display: "flex", alignItems: "center", justifyContent: "center", padding: 32, zIndex: 20, animation: "fadeIn 140ms ease" }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "var(--r-card)", padding: "22px 20px", width: "100%", animation: "popIn 160ms var(--ease)" }}>
-            <div className="legend" style={{ color: "var(--text-2)" }}>Switch live session?</div>
-            <div style={{ margin: "12px 0 6px 0", fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>{confirm.fromName} → {confirm.toName}</div>
-            <div style={{ fontSize: 12.5, color: "var(--text-2)", lineHeight: 1.55 }}>New expenses will start filing into {confirm.toName}.</div>
-            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
-              <div onClick={() => setConfirm(null)} style={{ flex: 1, height: 40, border: "1px solid var(--hairline)", borderRadius: 20, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Cancel</div>
-              <div onClick={() => { const id = confirm.toId; setConfirm(null); setLive(id, true); setExpanded(id); }} style={{ flex: 1, height: 40, background: "var(--accent)", color: "#FFF", borderRadius: 20, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Switch</div>
-            </div>
-          </div>
-        </div>
-      )}
+      {saveErr && <SaveError onDone={() => setSaveErr(false)} />}
     </div>
   );
 }
