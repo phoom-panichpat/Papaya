@@ -29,7 +29,8 @@ export async function seedDemo() {
   async function recording(name, base_currency, exchange_rate, is_active, members, expenses) {
     const { data: rec } = await supabase
       .from("recordings")
-      .insert({ owner_id, name, base_currency, exchange_rate, is_active })
+      // the demo's rates are all THB-anchored, so that's the era it pins
+      .insert({ owner_id, name, base_currency, exchange_rate, home_currency: "THB", is_active })
       .select()
       .single();
     await supabase
@@ -58,11 +59,12 @@ export async function seedDemo() {
   await addExpense(owner_id, null, self.id, "Coffee run", 9500, "KRW", [self], 0.026);
 }
 
-// home_rate = this expense's native→home rate, pinned at creation (see toHome).
-async function addExpense(owner_id, recording_id, paid_by, title, total, currency, members, home_rate = 1) {
+// home_rate = this expense's native→home rate, pinned at creation (see toHome);
+// home_currency = the currency it converts into, i.e. the expense's era.
+async function addExpense(owner_id, recording_id, paid_by, title, total, currency, members, home_rate = 1, home_currency = "THB") {
   const { data: exp } = await supabase
     .from("expenses")
-    .insert({ owner_id, recording_id, paid_by, title, total_amount: total, currency, home_rate, exchange_rate: recording_id ? null : home_rate })
+    .insert({ owner_id, recording_id, paid_by, title, total_amount: total, currency, home_rate, home_currency, exchange_rate: recording_id ? null : home_rate })
     .select()
     .single();
   const { data: item } = await supabase

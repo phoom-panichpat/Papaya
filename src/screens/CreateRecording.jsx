@@ -3,7 +3,7 @@ import { supabase } from "../lib/supabase";
 import { currencySymbol } from "../lib/format";
 import PeoplePicker from "../components/PeoplePicker";
 import { computePeopleSuggestions } from "../lib/suggestions";
-import { buildAliasMap, resolveAlias, mergePerson } from "../lib/balances";
+import { buildAliasMap, resolveAlias, mergePerson, eraFor } from "../lib/balances";
 
 const CURRENCIES = ["THB", "KRW", "USD", "EUR", "JPY", "GBP", "SGD", "MYR", "LAK"];
 
@@ -30,6 +30,10 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
   const [localPeople, setLocalPeople] = useState(() => people.filter((p) => !p.merged_into_id));
   const [name, setName] = useState("");
   const [homeCurrency, setHomeCurrency] = useState("THB");
+  // The recording's ERA — its home currency, fixed at creation. For a NEW
+  // recording that's the user's current home; for an existing one it's whatever
+  // it was created under, which editing must never change.
+  const [era, setEra] = useState("THB");
   const [customCurrency, setCustomCurrency] = useState(false);
   const [currency, setCurrency] = useState("THB");
   const [rate, setRate] = useState("");
@@ -53,10 +57,12 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
         ]);
         const { data: prof } = profResult;
         const hc = prof?.home_currency || "THB";
-        let nameVal = "", customCur = false, curVal = hc, rateVal = "", memberSet = new Set();
+        let nameVal = "", customCur = false, curVal = hc, rateVal = "", memberSet = new Set(), eraVal = hc;
         if (editRecordingId && recResult?.data) {
           const r = recResult.data;
           nameVal = r.name || "";
+          eraVal = eraFor(r, hc);
+          if (!r.base_currency) curVal = eraVal;
           if (r.base_currency) {
             customCur = true;
             curVal = r.base_currency;
@@ -67,6 +73,7 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
           memberSet = new Set((rm || []).map((x) => resolveAlias(x.person_id, aliasMap)));
         }
         setHomeCurrency(hc);
+        setEra(eraVal);
         setName(nameVal);
         setCustomCurrency(customCur);
         setCurrency(curVal);
@@ -91,7 +98,9 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [self?.id]);
 
-  const foreign = customCurrency && currency !== homeCurrency;
+  // the recording's rate converts its base currency into ITS era, which for an
+  // older record is not necessarily the user's current home currency
+  const foreign = customCurrency && currency !== era;
   const rateNum = parseFloat(rate);
   const canSave = name.trim().length > 0 && !saving;
 
@@ -118,6 +127,7 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
     const owner_id = self.owner_id;
     const ids = [...new Set([...(self ? [self.id] : []), ...memberIds])];
     if (editRecordingId) {
+      // home_currency is deliberately absent — an era is fixed at creation
       await supabase.from("recordings").update({
         name: name.trim(),
         base_currency: customCurrency ? currency : null,
@@ -139,6 +149,7 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
           name: name.trim(),
           base_currency: customCurrency ? currency : null,
           exchange_rate: foreign && rateNum > 0 ? rateNum : null,
+          home_currency: era, // this record's era, fixed here forever
           is_active: startNow,
         })
         .select()
@@ -202,7 +213,7 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
                 <span className="mono" style={{ fontSize: 9, color: "var(--text-4)" }}>⌄</span>
               </span>
             ) : (
-              <span style={{ fontSize: 14, color: "var(--text-3)" }}>Uses {homeCurrency}</span>
+              <span style={{ fontSize: 14, color: "var(--text-3)" }}>Uses {era}</span>
             )}
           </div>
 
@@ -219,7 +230,7 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
                   placeholder="0.00"
                   style={{ width: 76, height: 30, textAlign: "right", background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: 8, fontFamily: "var(--font-mono)", fontSize: 13, outline: "none", padding: "0 8px" }}
                 />
-                <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>{homeCurrency}</span>
+                <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>{era}</span>
               </span>
             </div>
           )}
@@ -249,11 +260,11 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
             <div style={{ width: 36, height: 3, borderRadius: 2, background: "#DCD6C6", margin: "0 auto 8px" }} />
             <div className="legend" style={{ padding: "6px 20px 4px" }}>Recording currency</div>
             <button onClick={() => { setCustomCurrency(false); setCurrencyOpen(false); }} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderTop: "1px solid var(--hairline-3)" }}>
-              <span style={{ fontSize: 15 }}>Same as home · {homeCurrency}</span>
-              <span style={{ fontSize: 16, color: "var(--text-2)" }}>{currencySymbol(homeCurrency)}{!customCurrency ? "  ✓" : ""}</span>
+              <span style={{ fontSize: 15 }}>{era === homeCurrency ? `Same as home · ${era}` : `This record's currency · ${era}`}</span>
+              <span style={{ fontSize: 16, color: "var(--text-2)" }}>{currencySymbol(era)}{!customCurrency ? "  ✓" : ""}</span>
             </button>
             {CURRENCIES.map((c) => (
-              <button key={c} onClick={() => { setCurrency(c); setCurrencyOpen(false); if (c !== homeCurrency) setRate(localStorage.getItem(`papaya:rate:${c}:${homeCurrency}`) || "1"); }} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderTop: "1px solid var(--hairline-3)" }}>
+              <button key={c} onClick={() => { setCurrency(c); setCurrencyOpen(false); if (c !== era) setRate(localStorage.getItem(`papaya:rate:${c}:${era}`) || "1"); }} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderTop: "1px solid var(--hairline-3)" }}>
                 <span style={{ fontSize: 15 }}>{c}</span>
                 <span style={{ fontSize: 16, color: "var(--text-2)" }}>{currencySymbol(c)}{c === currency ? "  ✓" : ""}</span>
               </button>

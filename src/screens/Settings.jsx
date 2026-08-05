@@ -16,6 +16,7 @@ const EMOJI = ["🙂", "🦊", "🐢", "🐝", "🐙", "🐳", "🦉", "🐼", "
 export default function Settings({ people, email = "", homeCurrency: homeCurrencyProp = "THB", onClose }) {
   const [homeCurrency, setHomeCurrency] = useState(homeCurrencyProp);
   const [currencyOpen, setCurrencyOpen] = useState(false);
+  const [pending, setPending] = useState(null); // currency awaiting typed confirmation
   const [self, setSelf] = useState(() => (people || []).find((p) => p.is_self) || null);
   const [editingSelf, setEditingSelf] = useState(false);
   const [dirty, setDirty] = useState(false); // did anything change that other screens need to re-read?
@@ -25,11 +26,24 @@ export default function Settings({ people, email = "", homeCurrency: homeCurrenc
   // (only possible if Settings is opened before App's first profile load lands).
   useEffect(() => { setHomeCurrency(homeCurrencyProp); }, [homeCurrencyProp]);
 
-  async function changeHomeCurrency(c) {
+  // Picking a currency does NOT apply it — it opens a typed confirmation.
+  // Changing home currency is not destructive any more (nothing is converted and
+  // no rate is asked for), but it IS effectively irreversible: once logs exist in
+  // the new era, switching back leaves the account permanently mixed. The typing
+  // step exists because the real failure mode is tapping through without reading.
+  function pickCurrency(c) {
     setCurrencyOpen(false);
     if (c === homeCurrency) return;
+    setPending(c);
+  }
+
+  async function confirmChangeCurrency() {
+    const c = pending;
     const { error } = await supabase.from("profiles").update({ home_currency: c }).neq("home_currency", c);
-    if (!error) { setHomeCurrency(c); setDirty(true); }
+    if (error) throw error; // the sheet stays open and says so
+    setHomeCurrency(c);
+    setPending(null);
+    setDirty(true);
   }
 
   async function saveSelf(name, emoji) {
@@ -69,7 +83,7 @@ export default function Settings({ people, email = "", homeCurrency: homeCurrenc
         <div style={{ padding: "18px 20px 6px" }}>
           <span className="legend">Home currency</span>
           <div className="mono" style={{ fontSize: 10.5, color: "var(--text-4)", marginTop: 8, letterSpacing: "0.04em" }}>
-            Your main currency. Foreign expenses show a faded home amount beside the native one.
+            The currency new expenses and recordings are logged in. Changing it never touches anything already logged.
           </div>
         </div>
         <div style={{ ...row, cursor: "pointer" }} onClick={() => setCurrencyOpen(true)}>
@@ -123,13 +137,23 @@ export default function Settings({ people, email = "", homeCurrency: homeCurrenc
             <div style={{ width: 36, height: 3, borderRadius: 2, background: "#DCD6C6", margin: "0 auto 8px" }} />
             <div className="legend" style={{ padding: "6px 20px 4px" }}>Home currency</div>
             {CURRENCIES.map((c) => (
-              <button key={c} onClick={() => changeHomeCurrency(c)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderTop: "1px solid var(--hairline-3)" }}>
+              <button key={c} onClick={() => pickCurrency(c)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderTop: "1px solid var(--hairline-3)" }}>
                 <span style={{ fontSize: 15 }}>{c}</span>
                 <span style={{ fontSize: 16, color: "var(--text-2)" }}>{currencySymbol(c)}{c === homeCurrency ? "  ✓" : ""}</span>
               </button>
             ))}
           </div>
         </div>
+      )}
+
+      {/* typed confirmation for a home-currency change */}
+      {pending && (
+        <ConfirmCurrencySheet
+          from={homeCurrency}
+          to={pending}
+          onConfirm={confirmChangeCurrency}
+          onClose={() => setPending(null)}
+        />
       )}
 
       {/* edit self person — mirrors People's EditSheet */}
@@ -140,6 +164,85 @@ export default function Settings({ people, email = "", homeCurrency: homeCurrenc
           onClose={() => setEditingSelf(false)}
         />
       )}
+    </div>
+  );
+}
+
+// Typed confirmation for changing the home currency.
+//
+// This asks for NO exchange rate, on purpose: nothing already logged is ever
+// converted, so there is no rate to ask for. Asking for one — and rescaling
+// every pinned rate on the answer — is what corrupted the live data in C2.
+//
+// What it does guard is autopilot. The change can't be undone once logs exist
+// in the new era, and a plain "Confirm" button is exactly what gets tapped
+// through. Typing the code means you can't complete it without reading it.
+function ConfirmCurrencySheet({ from, to, onConfirm, onClose }) {
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(false);
+  const matches = typed.trim().toUpperCase() === to;
+
+  async function go() {
+    if (!matches || busy) return;
+    setBusy(true);
+    setErr(false);
+    try { await onConfirm(); }
+    catch { setErr(true); setBusy(false); } // stay open so it can be retried
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "var(--scrim-sheet)", zIndex: 50, animation: "fadeIn 140ms ease" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", left: 0, right: 0, bottom: 0, background: "var(--surface)", borderTop: "1px solid var(--hairline)", borderRadius: "var(--r-sheet) var(--r-sheet) 0 0", padding: "14px 20px 24px", animation: "sheetIn 240ms var(--ease)" }}>
+        <div style={{ width: 36, height: 3, borderRadius: 2, background: "#DCD6C6", margin: "0 auto 14px" }} />
+
+        <div style={{ fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em" }}>Change home currency</div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 10 }}>
+          <span className="mono" style={{ fontSize: 13, letterSpacing: "0.08em", color: "var(--text-3)" }}>{from}</span>
+          <span className="mono" style={{ fontSize: 12, color: "var(--text-4)" }}>→</span>
+          <span className="mono" style={{ fontSize: 15, letterSpacing: "0.08em", color: "var(--text)", fontWeight: 600 }}>{to}</span>
+        </div>
+
+        {/* both halves stated plainly — what moves, and what provably doesn't */}
+        <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 9 }}>
+          <div style={{ fontSize: 13.5, lineHeight: 1.5, color: "var(--text-2)" }}>
+            New expenses and recordings will be logged in <strong style={{ color: "var(--text)" }}>{to}</strong>.
+          </div>
+          <div style={{ fontSize: 13.5, lineHeight: 1.5, color: "var(--text-2)" }}>
+            Nothing you've already logged changes. Records started in {from} keep logging in {from}, and no rate between {from} and {to} is ever used.
+          </div>
+          <div className="mono" style={{ fontSize: 10.5, lineHeight: 1.6, color: "var(--text-4)", letterSpacing: "0.03em" }}>
+            you can switch back, but logs made in {to} stay in {to}
+          </div>
+        </div>
+
+        <div className="legend" style={{ marginTop: 20, marginBottom: 8 }}>Type {to} to confirm</div>
+        <input
+          autoFocus
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          placeholder={to}
+          autoCapitalize="characters"
+          autoCorrect="off"
+          spellCheck={false}
+          style={{ width: "100%", height: 46, background: "var(--bg)", border: `1px solid ${matches ? "var(--accent)" : "var(--hairline)"}`, borderRadius: 12, fontFamily: "var(--font-mono)", fontSize: 15, letterSpacing: "0.1em", textTransform: "uppercase", outline: "none", padding: "0 14px" }}
+        />
+
+        {err && (
+          <div className="mono" style={{ fontSize: 10.5, color: "var(--danger)", marginTop: 10 }}>
+            couldn't save — nothing changed. try again.
+          </div>
+        )}
+
+        <button
+          onClick={go}
+          disabled={!matches || busy}
+          style={{ width: "100%", height: 48, borderRadius: 14, background: "var(--accent)", color: "#fff", fontSize: 15, fontWeight: 600, marginTop: 14, opacity: matches && !busy ? 1 : 0.4 }}
+        >
+          {busy ? "…" : `Log in ${to} from now on`}
+        </button>
+        <button onClick={onClose} style={{ width: "100%", height: 44, borderRadius: 12, fontSize: 14, color: "var(--text-3)", marginTop: 6 }}>Cancel</button>
+      </div>
     </div>
   );
 }

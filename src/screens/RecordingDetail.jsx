@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol, formatMoney, padIndex } from "../lib/format";
-import { statusForExpense, toHome, buildAliasMap, resolveAlias } from "../lib/balances";
+import { statusForExpense, toHome, buildAliasMap, resolveAlias, eraFor } from "../lib/balances";
 import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
 
@@ -88,9 +88,14 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
     onArchiveClose(); // refresh the underlying list, then pop once it's fresh (detail stays busy meanwhile)
   }
 
+  // This record's ERA — the home currency it was created under and keeps. Every
+  // log here converts to THAT currency, not to whatever home is set today, so
+  // the faded second line must be labelled with it.
+  const era = eraFor(rec, home);
+  const eraDiffers = !loading && era !== home;
   const base = rec?.base_currency || null;
-  const baseCur = base || home;
-  const dual = !!base && base !== home;
+  const baseCur = base || era;
+  const dual = !!base && base !== era;
   const recMap = rec ? { [rec.id]: rec } : {};
   const dateLabel = (() => {
     if (!logs.length) return "New";
@@ -136,6 +141,13 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
             <span className="mono" style={{ fontSize: 10.5, color: "var(--text-3)" }}>{padIndex(logs.length)} logs</span>
             {base && <><span style={{ color: "#C6C0B1", fontSize: 10 }}>·</span><span className="mono" style={{ fontSize: 10.5, color: "var(--text-3)" }}>{base}</span></>}
           </div>
+          {/* a record keeps the home currency it was started in — say so when
+              that isn't the one in Settings today, or its faded lines look wrong */}
+          {eraDiffers && (
+            <div className="mono" style={{ fontSize: 10, color: "var(--text-4)", marginTop: 6 }}>
+              logs in {era} · your home currency is {home}
+            </div>
+          )}
         </div>
 
         {/* party roster */}
@@ -188,7 +200,7 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
                     </span>
                   }
                   homeAmount={dual ? toHome(log.total_amount, log, recMap, home) : null}
-                  homeCur={home}
+                  homeCur={era}
                 />
               </div>
             ))

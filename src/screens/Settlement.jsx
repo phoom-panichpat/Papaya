@@ -4,7 +4,7 @@ import { currencySymbol, padIndex } from "../lib/format";
 import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
 import {
-  loadSettlementData, buildContributions, pairNet, pairNetByCurrency,
+  loadSettlementData, buildContributions, pairNet, pairNetByEra, sumHomeByEra,
   settleShares, unsettleShares, patchContribsSettled,
 } from "../lib/balances";
 
@@ -84,11 +84,14 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
     for (const c of contribs) {
       if (!c.settled || !c.settledAt) continue;
       const key = `${c.settledAt}::${c.creditor}::${c.debtor}`;
-      const g = groups[key] || (groups[key] = { settledAt: c.settledAt, creditor: c.creditor, debtor: c.debtor, amount: 0, contribs: [] });
-      g.amount += c.home;
+      const g = groups[key] || (groups[key] = { settledAt: c.settledAt, creditor: c.creditor, debtor: c.debtor, contribs: [] });
       g.contribs.push(c);
     }
-    return Object.values(groups).sort((a, b) => new Date(b.settledAt) - new Date(a.settledAt));
+    // totals are per ERA — home amounts pinned to different home currencies are
+    // different units and are never added together
+    return Object.values(groups)
+      .map((g) => ({ ...g, byEra: sumHomeByEra(g.contribs) }))
+      .sort((a, b) => new Date(b.settledAt) - new Date(a.settledAt));
   })();
 
   const historyEmpty = archivedLoose.length === 0 && archivedRecs.length === 0 && settleEvents.length === 0;
@@ -112,19 +115,41 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
       .catch(() => { setSaveErr(true); return load().catch(() => {}); });
   }, [load]);
 
-  // Per other person: their debts kept FROZEN in each debt's own native
-  // currency (byCur, never converted), plus a home net used only for the
-  // sort and the faded convenience total. positive = they owe you.
+  // Per other person: their debt expressed in home currency, grouped PER ERA
+  // (byEra) — every record/expense already carries its own manually-set rate
+  // to the currency it was logged under, so within one era there's nothing
+  // left to convert; the figure is already correct. A second era only appears
+  // once the user has actually changed their home currency. `homeNet` sums
+  // across eras and is therefore only ever used to order the list, never shown
+  // (adding two different eras' home figures together would be meaningless).
+  // positive = they owe you.
   const rows = self
     ? (people || [])
         .filter((p) => !p.is_self)
-        .map((p) => ({ p, byCur: pairNetByCurrency(contribs, self.id, p.id), homeNet: pairNet(contribs, self.id, p.id) }))
-        .filter((r) => r.byCur.length > 0)
+        .map((p) => ({
+          p,
+          byEra: pairNetByEra(contribs, self.id, p.id),
+          homeNet: pairNet(contribs, self.id, p.id),
+        }))
+        .filter((r) => r.byEra.length > 0)
         .sort((a, b) => b.homeNet - a.homeNet)
     : [];
 
-  const owedToYou = rows.filter((r) => r.homeNet > 0).reduce((s, r) => s + r.homeNet, 0);
-  const youOwe = rows.filter((r) => r.homeNet < 0).reduce((s, r) => s - r.homeNet, 0);
+  // Summary totals, one line per era — walk every row's own byEra entries
+  // (not homeNet) so one person owing you in the old era while you owe them
+  // in the new era lands as two separate figures on opposite sides.
+  const owedByEra = {}, oweByEra = {};
+  rows.forEach((r) => r.byEra.forEach((e) => {
+    if (e.net > 0) owedByEra[e.currency] = (owedByEra[e.currency] || 0) + e.net;
+    else if (e.net < 0) oweByEra[e.currency] = (oweByEra[e.currency] || 0) - e.net;
+  }));
+  const toSortedList = (bucket) =>
+    Object.entries(bucket)
+      .map(([currency, amount]) => ({ currency, amount }))
+      .filter((x) => Math.abs(x.amount) > 0.005)
+      .sort((a, b) => b.amount - a.amount);
+  const owedList = toSortedList(owedByEra);
+  const oweList = toSortedList(oweByEra);
 
   // PersonSettleSheet commit: `rows` = the original member rows to settle
   function commitSettle(rows) {
@@ -208,7 +233,11 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
                             </span>
                             <span className="mono" style={{ fontSize: 10, color: "var(--text-3)" }}>{relTime(ev.settledAt)} · {ev.contribs.length} share{ev.contribs.length === 1 ? "" : "s"}</span>
                           </span>
-                          <Money n={ev.amount} cur={home} color="var(--text-3)" style={{ fontSize: 15, flex: "none" }} />
+                          <span style={{ flex: "none", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                            {ev.byEra.map((e) => (
+                              <Money key={e.currency} n={e.amount} cur={e.currency} color="var(--text-3)" style={{ fontSize: 15 }} />
+                            ))}
+                          </span>
                         </button>
                       );
                     })}
@@ -272,11 +301,33 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
       <div style={{ padding: "16px 24px", borderBottom: "1px solid var(--hairline)", flex: "none", display: "flex", gap: 28 }}>
         <div>
           <div className="legend" style={{ color: "var(--settled)" }}>Owed to you</div>
-          <Money n={owedToYou} cur={home} color={owedToYou > 0.005 ? "var(--text)" : "var(--text-3)"} style={{ fontSize: 22, marginTop: 4 }} />
+          {owedList.length === 0 ? (
+            <Money n={0} cur={home} color="var(--text-3)" style={{ fontSize: 22, marginTop: 4 }} />
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 6, marginTop: 4 }}>
+              {owedList.map((e, i) => (
+                <span key={e.currency} style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                  {i > 0 && <span style={{ color: "var(--text-4)" }}>·</span>}
+                  <Money n={e.amount} cur={e.currency} color="var(--text)" style={{ fontSize: 22 }} />
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <div>
           <div className="legend" style={{ color: "var(--open)" }}>You owe</div>
-          <Money n={youOwe} cur={home} color={youOwe > 0.005 ? "var(--text)" : "var(--text-3)"} style={{ fontSize: 22, marginTop: 4 }} />
+          {oweList.length === 0 ? (
+            <Money n={0} cur={home} color="var(--text-3)" style={{ fontSize: 22, marginTop: 4 }} />
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 6, marginTop: 4 }}>
+              {oweList.map((e, i) => (
+                <span key={e.currency} style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                  {i > 0 && <span style={{ color: "var(--text-4)" }}>·</span>}
+                  <Money n={e.amount} cur={e.currency} color="var(--text)" style={{ fontSize: 22 }} />
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -294,12 +345,8 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {rows.map(({ p, byCur, homeNet }) => {
-              const single = byCur.length === 1;
-              // each debt shown in its OWN currency (frozen). the faded home line
-              // is the only figure that moves when home currency changes; skip it
-              // when the single debt is already in home currency (nothing to add).
-              const showHomeTotal = byCur.length > 1 || byCur[0].currency !== home;
+            {rows.map(({ p, byEra }) => {
+              const single = byEra.length === 1;
               return (
                 <div
                   key={p.id}
@@ -310,13 +357,13 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
                   <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
                     <span style={{ fontSize: 16, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.display_name}</span>
                     {single && (
-                      <span className="mono" style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: byCur[0].net > 0 ? "var(--settled)" : "var(--open)" }}>
-                        {byCur[0].net > 0 ? "owes you" : "you owe"}
+                      <span className="mono" style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: byEra[0].net > 0 ? "var(--settled)" : "var(--open)" }}>
+                        {byEra[0].net > 0 ? "owes you" : "you owe"}
                       </span>
                     )}
                   </span>
                   <span style={{ flex: "none", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
-                    {byCur.map((e) => {
+                    {byEra.map((e) => {
                       const they = e.net > 0;
                       return (
                         <span key={e.currency} style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
@@ -329,9 +376,6 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
                         </span>
                       );
                     })}
-                    {showHomeTotal && (
-                      <span className="mono" style={{ fontSize: 10, color: "var(--text-4)", marginTop: 1 }}>~ {money(homeNet, home)}</span>
-                    )}
                   </span>
                 </div>
               );
@@ -388,13 +432,16 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
     setTicked((s) => { const n = new Set(s); const k = keyOf(c); n.has(k) ? n.delete(k) : n.add(k); return n; });
   }
 
-  // net of the UNticked shares = what remains after this settle
-  const remaining = shares.reduce((sum, c) => {
-    if (ticked.has(keyOf(c))) return sum;
-    return sum + (c.creditor === self.id ? c.home : -c.home);
-  }, 0);
+  // Signed home net PER ERA. These readouts cross items and people, so they
+  // have to convert — but home amounts pinned to different home currencies are
+  // different units, so they're listed per era and never added across.
+  const signedByEra = (list) =>
+    sumHomeByEra(list.map((c) => ({ ...c, home: c.creditor === self.id ? c.home : -c.home })))
+      .map(({ currency, amount }) => ({ currency, net: amount })); // read as a signed net below
+
   const tickedList = shares.filter((c) => ticked.has(keyOf(c)));
-  const settlingNet = tickedList.reduce((sum, c) => sum + (c.creditor === self.id ? c.home : -c.home), 0);
+  const remaining = signedByEra(shares.filter((c) => !ticked.has(keyOf(c)))); // what's left after this settle
+  const settling = signedByEra(tickedList);
 
   function commit() {
     if (!tickedList.length) return;
@@ -443,10 +490,15 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
                         {c.item.is_rest ? "the rest" : (c.item.label || "item")} · {theyOwe ? "owes you" : "you owe"}
                       </span>
                     </span>
+                    {/* home-per-era primary, so these rows visibly add up to the
+                        person card and to the footer readouts. DualMoney's
+                        secondary slot carries the NATIVE amount here — the
+                        inverse of the record-scoped screens, which lead with
+                        native and fade the home line. */}
                     <DualMoney
-                      primary={<Money n={c.native} cur={c.currency} color={theyOwe ? "var(--settled)" : "var(--open)"} style={{ fontSize: 14, flex: "none" }} />}
-                      homeAmount={c.currency && c.currency !== home ? c.home : null}
-                      homeCur={home}
+                      primary={<Money n={c.home} cur={c.homeCurrency} color={theyOwe ? "var(--settled)" : "var(--open)"} style={{ fontSize: 14, flex: "none" }} />}
+                      homeAmount={c.currency && c.currency !== c.homeCurrency ? c.native : null}
+                      homeCur={c.currency}
                       style={{ flex: "none", alignItems: "flex-end" }}
                     />
                   </button>
@@ -458,12 +510,16 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
             <div style={{ borderTop: "1px solid var(--hairline)", marginTop: 10, paddingTop: 14 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
                 <span className="mono" style={{ fontSize: 10.5, color: "var(--text-3)" }}>
-                  {Math.abs(remaining) < 0.005
+                  {remaining.length === 0
                     ? "settles up fully"
-                    : remaining > 0 ? `${money(remaining, home)} still owed to you` : `you'd still owe ${money(remaining, home)}`}
+                    : remaining
+                        .map((e) => (e.net > 0 ? `${money(e.net, e.currency)} still owed to you` : `you'd still owe ${money(e.net, e.currency)}`))
+                        .join(" · ")}
                 </span>
                 <span className="mono" style={{ fontSize: 10.5, color: "var(--text-2)" }}>
-                  settling {settlingNet >= 0 ? "+" : "−"}{money(settlingNet, home)}
+                  settling {settling.length === 0
+                    ? `+${money(0, home)}`
+                    : settling.map((e) => `${e.net >= 0 ? "+" : "−"}${money(e.net, e.currency)}`).join(" · ")}
                 </span>
               </div>
               <button
@@ -517,7 +573,11 @@ function EventSheet({ event, self, home, nameOf, onClose, onUnsettle }) {
             </div>
             <div className="mono" style={{ fontSize: 10, color: "var(--text-3)" }}>{fullDate(event.settledAt)}</div>
           </div>
-          <Money n={event.amount} cur={home} color="var(--text)" style={{ fontSize: 20, flex: "none" }} />
+          <span style={{ flex: "none", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+            {event.byEra.map((e) => (
+              <Money key={e.currency} n={e.amount} cur={e.currency} color="var(--text)" style={{ fontSize: 20 }} />
+            ))}
+          </span>
         </div>
 
         {/* underlying shares — tickable for partial un-settle */}
@@ -543,7 +603,7 @@ function EventSheet({ event, self, home, nameOf, onClose, onUnsettle }) {
                     {c.item.is_rest ? "the rest" : (c.item.label || "item")}
                   </span>
                 </span>
-                <Money n={c.home} cur={home} color="var(--text-3)" style={{ fontSize: 14, flex: "none" }} />
+                <Money n={c.home} cur={c.homeCurrency} color="var(--text-3)" style={{ fontSize: 14, flex: "none" }} />
               </button>
             );
           })}

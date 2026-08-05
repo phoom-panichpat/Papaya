@@ -32,6 +32,18 @@ export function toHome(amount, expense, recMap, homeCurrency) {
   return amt;
 }
 
+// An ERA is the home currency a pinned rate converts INTO. Eras are inherited
+// from CONTAINERS, never read from the user's setting at the moment of logging:
+// a recording keeps the era it was created under, and every expense filed there
+// takes that era — including one added long after the user switched home
+// currency. That switch is a fact about the USER, not about the group who share
+// the record and settle against each other, so it must never re-denominate or
+// split their record. A loose expense has no container, so it pins the user's
+// home currency at creation. Nothing is ever converted between two eras.
+export function eraFor(recording, homeCurrency) {
+  return recording?.home_currency || homeCurrency;
+}
+
 // ── alias resolution (person merge) ──────────────────────────────────────
 // A person can be pointed at another via `merged_into_id` (e.g. a placeholder
 // token merged into a real account). This is NON-DESTRUCTIVE: the row stays,
@@ -84,6 +96,12 @@ export function buildContributions(data, homeCurrency) {
     const expCur = exp.currency || baseCurrency;
     const nativeAmt = Number(it.amount) || 0;
     const homeAmt = toHome(nativeAmt, exp, recMap, homeCurrency);
+    // The ERA: which currency this expense's home amount is denominated in.
+    // `home_rate` records a rate but not what it points at, so without this a
+    // home-currency change would silently mislabel every old pin. Falls back to
+    // the current home currency for rows written before the column existed —
+    // which is exactly today's behaviour, so adding the era moves no number.
+    const homeCur = exp.home_currency || homeCurrency;
     // `base` = the item in the recording's base currency — the ONE shared
     // currency an in-record settlement is denominated in. Derive it from the
     // pinned home value rather than through the recording's currency, so that
@@ -109,6 +127,7 @@ export function buildContributions(data, homeCurrency) {
         debtor: pid,
         creditor: payer,
         home, base, native, currency, baseCurrency,
+        homeCurrency: homeCur, // the currency `home` is in — this debt's era
         itemId: it.id,
         personId: pid, // CANONICAL id (display + tick identity)
         settleKeys: grp.map((m) => ({ itemId: it.id, personId: m.person_id })), // ORIGINAL rows to settle
@@ -150,24 +169,53 @@ export function pairNet(contribs, aId, bId) {
   return net;
 }
 
-// Direct pairwise net between two people, split BY the debt's own native
-// currency and never converted. A person's balance can span currencies that
-// don't net against each other (a KRW record + a THB loose expense), so a
-// single home figure can't represent it without a conversion that moves when
-// home currency changes. This keeps each debt frozen in the currency it was
-// incurred in. positive net = bId owes aId (mirrors pairNet). Returns one entry
-// per non-zero currency, largest first.
-export function pairNetByCurrency(contribs, aId, bId) {
+// Direct pairwise net between two people, grouped along some currency axis and
+// never converted across it. positive net = bId owes aId (mirrors pairNet).
+// Returns one entry per non-zero currency, largest first.
+function pairNetGrouped(contribs, aId, bId, curOf, amtOf) {
   const byCur = {};
   contribs.forEach((c) => {
     if (c.settled) return;
-    if (c.debtor === bId && c.creditor === aId) byCur[c.currency] = (byCur[c.currency] || 0) + c.native;
-    else if (c.debtor === aId && c.creditor === bId) byCur[c.currency] = (byCur[c.currency] || 0) - c.native;
+    const k = curOf(c);
+    if (c.debtor === bId && c.creditor === aId) byCur[k] = (byCur[k] || 0) + amtOf(c);
+    else if (c.debtor === aId && c.creditor === bId) byCur[k] = (byCur[k] || 0) - amtOf(c);
   });
   return Object.entries(byCur)
     .map(([currency, net]) => ({ currency, net }))
     .filter((e) => Math.abs(e.net) > 0.005)
     .sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+}
+
+// …split by the debt's own NATIVE currency. NOT used by any screen right now —
+// the Settlement tab shows home-per-era instead (Phoom's call, 2026-08-05).
+// Kept + tested because it's the other honest way to show a cross-currency
+// balance, and the record-scoped screens still lead with native amounts.
+// A person's balance can span
+// currencies that don't net against each other (a KRW record + a THB loose
+// expense), so a single home figure can't represent it without a conversion
+// that moves when home currency changes. Keeps each debt frozen in the currency
+// it was incurred in.
+export function pairNetByCurrency(contribs, aId, bId) {
+  return pairNetGrouped(contribs, aId, bId, (c) => c.currency, (c) => c.native);
+}
+
+// …split by ERA (the currency each debt's pinned rate converts into). Home
+// amounts from different eras are different units: adding them would need a
+// rate between two home currencies, which this model never has and never asks
+// for. So a home-currency figure is summed WITHIN an era and listed across.
+export function pairNetByEra(contribs, aId, bId) {
+  return pairNetGrouped(contribs, aId, bId, (c) => c.homeCurrency, (c) => c.home);
+}
+
+// Plain (unsigned) sum of home amounts grouped by era — for settled events and
+// other "what did this add up to" readouts. Same no-cross-era rule as above.
+export function sumHomeByEra(contribs) {
+  const byEra = {};
+  (contribs || []).forEach((c) => { byEra[c.homeCurrency] = (byEra[c.homeCurrency] || 0) + c.home; });
+  return Object.entries(byEra)
+    .map(([currency, amount]) => ({ currency, amount }))
+    .filter((e) => Math.abs(e.amount) > 0.005)
+    .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
 }
 
 // Net per person within an optional scope. positive = is owed, negative = owes.

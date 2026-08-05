@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol, formatMoney } from "../lib/format";
-import { settleShares, unsettleShares, toHome, buildAliasMap, resolveAlias } from "../lib/balances";
+import { settleShares, unsettleShares, toHome, buildAliasMap, resolveAlias, eraFor } from "../lib/balances";
 import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
 
@@ -64,9 +64,14 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
 
   useEffect(() => { if (archiving.current) return; load(); }, [load, refreshKey]);
 
-  const cur = exp?.currency || rec?.base_currency || home;
+  // This expense's ERA — the home currency its pinned rate converts into (from
+  // its record, or from home at the moment a loose expense was logged). Every
+  // home figure below is in THAT currency, never in today's setting.
+  const era = exp?.home_currency || eraFor(rec, home);
+  const eraDiffers = !!exp && era !== home;
+  const cur = exp?.currency || rec?.base_currency || era;
   const recMap = rec ? { [rec.id]: rec } : {};
-  const homeAmount = cur !== home ? toHome(exp.total_amount, exp, recMap, home) : null;
+  const homeAmount = cur !== era ? toHome(exp.total_amount, exp, recMap, home) : null;
 
   // per-person breakdown (everyone but the payer): total, settled state, and
   // ALL of the person's (itemId, personId) shares so we can toggle them at once.
@@ -171,10 +176,17 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
                   </span>
                 }
                 homeAmount={homeAmount}
-                homeCur={home}
+                homeCur={era}
                 style={{ alignItems: "center" }}
               />
             </div>
+            {/* this expense's rate was pinned to the currency below, not to the
+                one in Settings today — say which, or the faded line looks wrong */}
+            {eraDiffers && (
+              <div className="mono" style={{ fontSize: 10, color: "var(--text-4)", marginTop: 8 }}>
+                pinned in {era} · your home currency is {home}
+              </div>
+            )}
           </div>
 
           {/* meta */}
@@ -257,8 +269,8 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
                           <span className="money" style={{ fontSize: 14, textDecoration: settled ? "line-through" : "none" }}>{amount.toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>
                         </span>
                       }
-                      homeAmount={cur !== home ? toHome(amount, exp, recMap, home) : null}
-                      homeCur={home}
+                      homeAmount={cur !== era ? toHome(amount, exp, recMap, home) : null}
+                      homeCur={era}
                       strike={settled}
                     />
                   </button>

@@ -9,7 +9,8 @@
 import {
   toHome, buildContributions, pairNet, pairNetByCurrency, netByPerson,
   directTransfers, minimizeTransfers, statusForExpense,
-  buildAliasMap, resolveAlias, patchContribsSettled,
+  buildAliasMap, resolveAlias, patchContribsSettled, eraFor,
+  pairNetByEra, sumHomeByEra,
 } from "../src/lib/balances-core.mjs";
 
 let pass = 0, fail = 0;
@@ -360,6 +361,97 @@ const taxiShare = (d) => buildContributions(d, HOME).find((c) => c.debtor === "y
   check("invariant: a zero/negative pin falls back instead of zeroing the debt",
     approx(taxiShare(makeTaxi({ exp: { home_rate: 0 } })).home, 100) &&
     approx(taxiShare(makeTaxi({ exp: { home_rate: -5 } })).home, 100));
+}
+
+// ── THE ERA: each expense records the currency its rate converts INTO ────
+// `home_rate` is a rate with no destination; `home_currency` is what names it.
+// This is the half that makes changing the home currency safe: expenses stay
+// knowable in the currency they were logged under, and nothing old is ever
+// converted between eras (the conversion is exactly what corrupted live data).
+{
+  const withEra = taxiShare(makeTaxi({ exp: { home_currency: "THB" } }));
+  check("era: a contribution carries its expense's home_currency",
+    withEra.homeCurrency === "THB" && approx(withEra.home, 100));
+
+  // Rows written before the column existed fall back to the current home
+  // currency — exactly today's behaviour, which is why the era moves no number.
+  const noEra = taxiShare(makeTaxi());
+  check("era: a null home_currency falls back to the passed home currency",
+    makeTaxi().expenses[0].home_currency === undefined && noEra.homeCurrency === HOME);
+
+  // THE CASE THE WHOLE MODEL EXISTS FOR: the taxi was logged while home was
+  // THB; the user then switched to USD and logged another. Both live in one
+  // dataset, each keeping its own era and its own frozen home amount. Neither
+  // is converted into the other, and no THB↔USD rate is ever asked for.
+  const mixed = {
+    people: [{ id: "you", is_self: true }, { id: "rui" }],
+    recordings: [],
+    expenses: [
+      { id: "old", recording_id: null, currency: "KRW", home_rate: 0.02,    home_currency: "THB", paid_by: "rui" },
+      { id: "new", recording_id: null, currency: "KRW", home_rate: 0.00061, home_currency: "USD", paid_by: "rui" },
+    ],
+    items: [{ id: "oi", expense_id: "old", amount: 10000 }, { id: "ni", expense_id: "new", amount: 10000 }],
+    members: [
+      { item_id: "oi", person_id: "you" }, { item_id: "oi", person_id: "rui" },
+      { item_id: "ni", person_id: "you" }, { item_id: "ni", person_id: "rui" },
+    ],
+    settlements: [],
+  };
+  // Eras are INHERITED FROM CONTAINERS, not read from the user's setting at the
+  // moment of logging. A record started under THB keeps logging in THB after the
+  // user moves to USD — the switch is a fact about the user, not about the group
+  // who share that record. Because of this a record can never hold two eras, so
+  // its single base rate is always era-consistent.
+  check("era: an expense in a recording inherits the RECORD's era, not the current home",
+    eraFor({ home_currency: "THB" }, "USD") === "THB");
+  check("era: a loose expense pins the user's home currency at creation",
+    eraFor(null, "USD") === "USD" && eraFor(undefined, "THB") === "THB");
+  check("era: a recording with no era of its own falls back to the current home",
+    eraFor({ base_currency: "KRW" }, "USD") === "USD");
+
+  const eraOf = (cs, id) => cs.find((c) => c.expenseId === id);
+  const asThb = buildContributions(mixed, "THB");
+  const asUsd = buildContributions(mixed, "USD");
+  check("era: two eras coexist in one dataset, each keeping its own currency",
+    eraOf(asThb, "old").homeCurrency === "THB" && eraOf(asThb, "new").homeCurrency === "USD");
+  check("era: each debt's home amount is frozen by its own pin",
+    approx(eraOf(asThb, "old").home, 100) && approx(eraOf(asThb, "new").home, 3.05));
+  check("era: changing the home currency moves neither debt nor its era",
+    eraOf(asUsd, "old").homeCurrency === "THB" && approx(eraOf(asUsd, "old").home, 100) &&
+    eraOf(asUsd, "new").homeCurrency === "USD" && approx(eraOf(asUsd, "new").home, 3.05));
+
+  // End to end: the Korea trip was started under THB; the user has since moved
+  // to USD. A taxi filed into that trip is still a THB-era ฿100 debt.
+  const inRecord = makeTaxi({
+    rec: { home_currency: "THB" },
+    exp: { home_currency: eraFor({ home_currency: "THB" }, "USD") }, // what the form pins
+  });
+  const share = buildContributions(inRecord, "USD").find((c) => c.debtor === "you");
+  check("era: an expense in a THB-era record stays a THB debt under a USD home",
+    share.homeCurrency === "THB" && approx(share.home, 100) && approx(share.native, 5000));
+
+  // ── displaying eras: group, never add across ──────────────────────────
+  // A home figure is only summable WITHIN an era — adding two eras' figures
+  // would need a rate between two home currencies, which never exists here.
+  const mixedCs = buildContributions(mixed, "THB");
+  const paired = pairNetByEra(mixedCs, "rui", "you"); // rui is owed by you in both
+  check("display: pairNetByEra keeps each era's home total separate",
+    paired.length === 2 &&
+    approx(paired.find((e) => e.currency === "THB").net, 100) &&
+    approx(paired.find((e) => e.currency === "USD").net, 3.05));
+  check("display: pairNetByEra is antisymmetric, like pairNet",
+    pairNetByEra(mixedCs, "you", "rui").every((e) =>
+      approx(e.net, -paired.find((x) => x.currency === e.currency).net)));
+  check("display: pairNetByEra is unchanged by the home currency in view",
+    JSON.stringify(pairNetByEra(buildContributions(mixed, "USD"), "rui", "you")) === JSON.stringify(paired));
+
+  const summed = sumHomeByEra(mixedCs);
+  check("display: sumHomeByEra totals within an era and lists across",
+    summed.length === 2 &&
+    approx(summed.find((e) => e.currency === "THB").amount, 100) &&
+    approx(summed.find((e) => e.currency === "USD").amount, 3.05));
+  check("display: a single-era dataset still yields exactly one figure",
+    sumHomeByEra(buildContributions(makeTaxi({ exp: { home_currency: "THB" } }), "THB")).length === 1);
 }
 
 // Backfill parity: the migration sets home_rate = toHome(1, …), i.e. today's

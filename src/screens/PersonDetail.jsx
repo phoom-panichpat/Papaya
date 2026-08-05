@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol, padIndex } from "../lib/format";
-import { loadSettlementData, buildContributions, pairNet, buildAliasMap, resolveAlias, unmergePerson } from "../lib/balances";
+import { loadSettlementData, buildContributions, pairNetByEra, sumHomeByEra, buildAliasMap, resolveAlias, unmergePerson } from "../lib/balances";
 import { EditSheet } from "./People";
 
 function relTime(iso) {
@@ -65,9 +65,13 @@ export default function PersonDetail({ personId, people, onClose, onOpenExpense,
   useEffect(() => { load(); }, [load, refreshKey]);
 
   // net between self and this person (positive = they owe you)
-  const net = self ? pairNet(contribs, self.id, personId) : 0;
-  const theyOwe = net > 0.005;
-  const youOwe = net < -0.005;
+  // grouped PER ERA, same rule as the Settlement tab: home amounts pinned to
+  // different home currencies are different units and are never added together
+  const byEra = self ? pairNetByEra(contribs, self.id, personId) : [];
+  const single = byEra.length === 1;
+  const settledUp = byEra.length === 0;
+  const theyOwe = single && byEra[0].net > 0;
+  const youOwe = single && byEra[0].net < 0;
 
   // recordings this person appears in (payer or member) — any contrib in their pair with a recordingId
   const inRecordings = (() => {
@@ -92,11 +96,12 @@ export default function PersonDetail({ personId, people, onClose, onOpenExpense,
       const inPair = (c.debtor === self.id && c.creditor === personId) || (c.debtor === personId && c.creditor === self.id);
       if (!inPair) continue;
       const key = `${c.settledAt}::${c.creditor}::${c.debtor}`;
-      const g = groups[key] || (groups[key] = { settledAt: c.settledAt, creditor: c.creditor, debtor: c.debtor, amount: 0, contribs: [] });
-      g.amount += c.home;
+      const g = groups[key] || (groups[key] = { settledAt: c.settledAt, creditor: c.creditor, debtor: c.debtor, contribs: [] });
       g.contribs.push(c);
     }
-    return Object.values(groups).sort((a, b) => new Date(b.settledAt) - new Date(a.settledAt));
+    return Object.values(groups)
+      .map((g) => ({ ...g, byEra: sumHomeByEra(g.contribs) })) // totals per era, never summed across
+      .sort((a, b) => new Date(b.settledAt) - new Date(a.settledAt));
   })();
 
   // refCount: how many expense rows reference this person (payer or member) — gates removal
@@ -156,10 +161,25 @@ export default function PersonDetail({ personId, people, onClose, onOpenExpense,
                   {theyOwe ? "owes you" : youOwe ? "you owe" : "balance"}
                 </span>
                 <span style={{ fontSize: 15, fontWeight: 600 }}>
-                  {theyOwe ? `${me.display_name} owes you` : youOwe ? `You owe ${me.display_name}` : "All settled up"}
+                  {settledUp ? "All settled up" : theyOwe ? `${me.display_name} owes you` : youOwe ? `You owe ${me.display_name}` : "Open balance"}
                 </span>
               </span>
-              <Money n={Math.abs(net)} cur={home} color={theyOwe ? "var(--settled)" : youOwe ? "var(--open)" : "var(--text-3)"} style={{ fontSize: 22, flex: "none" }} />
+              {settledUp ? (
+                <Money n={0} cur={home} color="var(--text-3)" style={{ fontSize: 22, flex: "none" }} />
+              ) : (
+                <span style={{ flex: "none", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
+                  {byEra.map((e) => (
+                    <span key={e.currency} style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
+                      {!single && (
+                        <span className="mono" style={{ fontSize: 8.5, letterSpacing: "0.06em", textTransform: "uppercase", color: e.net > 0 ? "var(--settled)" : "var(--open)" }}>
+                          {e.net > 0 ? "owes you" : "you owe"}
+                        </span>
+                      )}
+                      <Money n={e.net} cur={e.currency} color={e.net > 0 ? "var(--settled)" : "var(--open)"} style={{ fontSize: single ? 22 : 16 }} />
+                    </span>
+                  ))}
+                </span>
+              )}
             </div>
           </div>
 
@@ -204,7 +224,11 @@ export default function PersonDetail({ personId, people, onClose, onOpenExpense,
                         </span>
                         <span className="mono" style={{ fontSize: 9.5, color: "var(--text-3)" }}>{relTime(ev.settledAt)} · {ev.contribs.length} share{ev.contribs.length === 1 ? "" : "s"}</span>
                       </span>
-                      <Money n={ev.amount} cur={home} color="var(--text-3)" style={{ fontSize: 14, flex: "none" }} />
+                      <span style={{ flex: "none", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                        {ev.byEra.map((e) => (
+                          <Money key={e.currency} n={e.amount} cur={e.currency} color="var(--text-3)" style={{ fontSize: 14 }} />
+                        ))}
+                      </span>
                     </div>
                   );
                 })}

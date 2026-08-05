@@ -3,7 +3,7 @@ import { supabase } from "../lib/supabase";
 import { currencySymbol } from "../lib/format";
 import PeoplePicker from "../components/PeoplePicker";
 import { computePeopleSuggestions } from "../lib/suggestions";
-import { buildAliasMap, resolveAlias, mergePerson } from "../lib/balances";
+import { buildAliasMap, resolveAlias, mergePerson, eraFor } from "../lib/balances";
 
 const CURRENCIES = ["THB", "KRW", "USD", "EUR", "JPY", "GBP", "SGD", "MYR", "LAK"];
 
@@ -15,6 +15,16 @@ function displayAmount(str) {
   const [i, d] = str.split(".");
   const gi = Number(i || 0).toLocaleString("en-US");
   return d !== undefined ? gi + "." + d : gi;
+}
+
+// The rate on an expense is its OWN rate to its ERA currency — that is what
+// gets pinned (home_rate) and frozen. Pre-fill order: the recording's own rate
+// (when the expense is in the recording's currency, that rate already IS
+// native→era), then the last rate used for this pair, then 1.
+function defaultRate(cur, era, rec) {
+  if (!cur || cur === era) return "";
+  if (rec?.base_currency === cur && rec.exchange_rate) return String(rec.exchange_rate);
+  return localStorage.getItem(`papaya:rate:${cur}:${era}`) || "1";
 }
 
 // small avatar cluster
@@ -104,10 +114,16 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
           setRecording(rec);
           setMembers(memberIds);
           setPaidBy(resolveAlias(e.paid_by, aliasMap));
-          setCurrency(e.currency || rec?.base_currency || hc);
+          const editEra = eraFor(rec, hc);
+          const editCur = e.currency || rec?.base_currency || editEra;
+          setCurrency(editCur);
           setAmount(String(e.total_amount ?? "0"));
           setTitle(e.title || "");
-          if (e.exchange_rate) setRate(String(e.exchange_rate));
+          // the rate field means native→era, so pre-fill from the pin. Older
+          // rows (never pinned) fall back to their stored expense→base rate.
+          setRate(e.home_rate ? String(e.home_rate)
+            : e.exchange_rate ? String(e.exchange_rate)
+            : defaultRate(editCur, editEra, rec));
           setKeypadOpen(false);
           if (carve.length) {
             setSliced(true);
@@ -137,9 +153,15 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
           const { data: rm } = await supabase.from("recording_members").select("person_id").eq("recording_id", rec.id);
           memberIds = [...new Set((rm || []).map((r) => resolveAlias(r.person_id, aliasMap)))];
         }
+        // in a recording → its currency (or its era, if it has no own currency);
+        // loose → the user's home currency (not a hardcoded THB, which would ask
+        // a non-THB user for a rate on every loose log)
+        const newEra = eraFor(rec, hc);
+        const newCur = rec ? rec.base_currency || newEra : hc;
         if (profRes.data?.home_currency) setHomeCurrency(profRes.data.home_currency);
         setRecording(rec);
-        if (rec?.base_currency) setCurrency(rec.base_currency);
+        setCurrency(newCur);
+        setRate(defaultRate(newCur, newEra, rec));
         setMembers(memberIds);
         setSplitIds(new Set(memberIds.length ? memberIds : self ? [self.id] : []));
         setPaidBy(self?.id || null);
@@ -187,10 +209,19 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
 
   const total = parseFloat(amount) || 0;
   const perHead = splitIds.size ? total / splitIds.size : 0;
-  const baseCurrency = recording?.base_currency || homeCurrency;
-  const foreign = currency !== baseCurrency;
+  // This expense's ERA: inherited from the recording it's filed in, so a record
+  // started under THB keeps logging in THB even after the user switches home.
+  // A loose expense pins the user's current home currency.
+  const era = eraFor(recording, homeCurrency);
+  const eraDiffers = era !== homeCurrency;
+  const baseCurrency = recording?.base_currency || era;
+  // The rate the user enters is ALWAYS this expense's own rate to its era — the
+  // recording's rate is never multiplied in. So the card shows whenever the
+  // expense's currency differs from the era, including the ordinary case of a
+  // KRW expense in a KRW record: that expense still needs its own pin.
+  const needsRate = currency !== era;
   const rateNum = parseFloat(rate);
-  const converted = foreign && rateNum > 0 ? total * rateNum : null;
+  const converted = needsRate && rateNum > 0 ? total * rateNum : null;
 
   const carveTotal = items.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
   const restAmount = total - carveTotal;
@@ -324,13 +355,19 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
     if (!canSave) return;
     setSaving(true);
     const owner_id = self.owner_id;
-    if (foreign && rateNum > 0) localStorage.setItem(`papaya:rate:${currency}:${baseCurrency}`, rate);
-    // Pin this expense's own native→home rate. Once saved it's frozen: it is
-    // what every balance reads, so changing the recording's currency later can
-    // never move this debt. Both hops are resolved here, at creation.
-    const expToBase = foreign && rateNum > 0 ? rateNum : 1;
-    const baseToHome = baseCurrency !== homeCurrency ? Number(recording?.exchange_rate) || 1 : 1;
-    const fields = { recording_id: recording?.id || null, paid_by: paidBy, title: title.trim() || ts, total_amount: total, currency, exchange_rate: foreign && rateNum > 0 ? rateNum : null, home_rate: expToBase * baseToHome };
+    if (needsRate && rateNum > 0) localStorage.setItem(`papaya:rate:${currency}:${era}`, rate);
+    // Pin this expense's own native→era rate AND the era that rate points at.
+    // Once saved both are frozen: they are what every balance reads, so neither
+    // the recording's currency nor a later home-currency change can move this
+    // debt. Editing re-pins at the current rate.
+    const homeRate = needsRate && rateNum > 0 ? rateNum : 1;
+    // expenses.exchange_rate (expense → recording base) is now DERIVED, not
+    // entered — it survives only as toHome's fallback for unpinned rows and as
+    // an edit-mode default. Exactly 1 when the expense is already in the
+    // recording's currency, so there's no float round-trip.
+    const recToEra = baseCurrency !== era ? Number(recording?.exchange_rate) || 1 : 1;
+    const expToBase = currency === baseCurrency ? 1 : homeRate / recToEra;
+    const fields = { recording_id: recording?.id || null, paid_by: paidBy, title: title.trim() || ts, total_amount: total, currency, exchange_rate: expToBase, home_rate: homeRate, home_currency: era };
     let exp;
     if (editExpenseId) {
       // editing: update the row and rebuild its split (old items + members cascade-delete)
@@ -417,8 +454,8 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
         <div style={{ flex: 1 }} />
       ) : (
       <div style={{ flex: 1, overflowY: "auto", animation: "fadeIn 160ms var(--ease)" }}>
-        {/* currency + exchange rate — contained card, shown only for a foreign currency */}
-        {foreign && (
+        {/* currency + this expense's own rate to home — shown whenever they differ */}
+        {needsRate && (
           <div style={{ margin: "10px 20px 6px", background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "var(--r-card)", overflow: "hidden" }}>
             <div onClick={() => { setKeypadOpen(false); setCurrencyOpen(true); }} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", cursor: "pointer" }}>
               <span style={{ fontSize: 15 }}>Currency</span>
@@ -428,7 +465,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
               </span>
             </div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderTop: "1px solid var(--hairline-3)" }}>
-              <span style={{ fontSize: 15 }}>Exchange rate</span>
+              <span style={{ fontSize: 15 }}>Rate to {era}</span>
               <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>1 {currency} =</span>
                 <input
@@ -439,15 +476,22 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
                   placeholder="0.00"
                   style={{ width: 76, height: 30, textAlign: "right", background: "var(--bg)", border: "1px solid var(--hairline)", borderRadius: 8, fontFamily: "var(--font-mono)", fontSize: 13, outline: "none", padding: "0 8px" }}
                 />
-                <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>{baseCurrency}</span>
+                <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>{era}</span>
               </span>
             </div>
             <div style={{ padding: "0 16px 14px" }}>
               <span className="mono" style={{ fontSize: 10.5, color: "var(--text-3)" }}>
                 {converted != null
-                  ? `≈ ${currencySymbol(baseCurrency)}${converted.toLocaleString("en-US", { maximumFractionDigits: 2 })} in ${baseCurrency}`
-                  : "optional — converts to your base currency"}
+                  ? `${currencySymbol(currency)}${total.toLocaleString("en-US", { maximumFractionDigits: 2 })} ≈ ${currencySymbol(era)}${converted.toLocaleString("en-US", { maximumFractionDigits: 2 })} in ${era}`
+                  : `this expense's value in ${era} — pinned when you save`}
               </span>
+              {/* the record keeps the currency it was started in, so say so —
+                  otherwise being asked for a THB rate on a USD home reads as a bug */}
+              {eraDiffers && (
+                <div className="mono" style={{ fontSize: 10.5, color: "var(--text-4)", marginTop: 5 }}>
+                  this record logs in {era} · your home currency is {homeCurrency}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -606,7 +650,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
             <div style={{ width: 36, height: 3, borderRadius: 2, background: "#DCD6C6", margin: "0 auto 8px" }} />
             <div className="legend" style={{ padding: "6px 20px 4px" }}>Currency</div>
             {CURRENCIES.map((c) => (
-              <button key={c} onClick={() => { setCurrency(c); setCurrencyOpen(false); if (c === baseCurrency) { setRate(""); } else { setRate(localStorage.getItem(`papaya:rate:${c}:${baseCurrency}`) || "1"); } }} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderTop: "1px solid var(--hairline-3)" }}>
+              <button key={c} onClick={() => { setCurrency(c); setCurrencyOpen(false); setRate(defaultRate(c, era, recording)); }} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderTop: "1px solid var(--hairline-3)" }}>
                 <span style={{ fontSize: 15 }}>{c}</span>
                 <span style={{ fontSize: 16, color: "var(--text-2)" }}>{currencySymbol(c)}{c === currency ? "  ✓" : ""}</span>
               </button>

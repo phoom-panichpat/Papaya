@@ -37,13 +37,20 @@ create table people (
 
 -- ── recordings (containers: trip / night out / recurring group) ─────────
 -- Purely organizational. Date range is DERIVED from expenses, not stored.
--- base_currency null = use owner's home_currency. exchange_rate = base→home.
+-- base_currency null = use the recording's home_currency (its era).
+-- exchange_rate = base→that era.
 create table recordings (
   id            uuid primary key default gen_random_uuid(),
   owner_id      uuid not null references profiles(id) on delete cascade,
   name          text not null,
   base_currency text,
   exchange_rate numeric,
+  -- The home currency this recording was created under — its ERA. Fixed at
+  -- creation and inherited by EVERY expense filed here, including ones added
+  -- after the user switches home currency: that switch is a fact about the
+  -- user, not about the group who share this record, so it must never
+  -- re-denominate or split it. Editing a recording never changes this.
+  home_currency text,
   is_active     boolean not null default false,  -- live session (max one per owner; enforced in app)
   archived_at   timestamptz,                     -- null = active (on Home); set = archived (in History)
   created_at    timestamptz default now()
@@ -72,6 +79,12 @@ create table expenses (
   -- creation. It is what every balance reads (see toHome), so a recording's
   -- currency can never retroactively rewrite a debt logged under it.
   home_rate     numeric,
+  -- The currency home_rate converts INTO — this expense's ERA. A rate without
+  -- the currency it points at is meaningless: change your home currency and
+  -- every old pin would silently be labelled wrong. Expenses logged under THB
+  -- stay knowable in THB forever; ones logged after a switch to USD are
+  -- knowable in USD. Nothing old is ever converted between eras.
+  home_currency text,
   archived_at   timestamptz,  -- loose expenses only: null = on Home; set = archived (Settlement → History). Deliberate act; settled ≠ archived.
   created_at    timestamptz default now()
 );

@@ -10,8 +10,9 @@
 import { supabase } from "./supabase";
 
 export {
-  toHome, buildContributions, pairNet, pairNetByCurrency, netByPerson, minimizeTransfers, directTransfers, statusForExpense,
-  buildAliasMap, resolveAlias, patchContribsSettled,
+  toHome, buildContributions, pairNet, pairNetByCurrency, pairNetByEra, sumHomeByEra,
+  netByPerson, minimizeTransfers, directTransfers, statusForExpense,
+  buildAliasMap, resolveAlias, patchContribsSettled, eraFor,
 } from "./balances-core.mjs";
 
 // ── load everything the money layer needs ────────────────────────────────

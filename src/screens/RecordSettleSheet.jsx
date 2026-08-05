@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol } from "../lib/format";
 import {
-  loadSettlementData, buildContributions, toHome,
+  loadSettlementData, buildContributions, toHome, eraFor,
   settleShares, unsettleShares, patchContribsSettled,
 } from "../lib/balances";
 import DualMoney from "../components/DualMoney";
@@ -46,8 +46,10 @@ export default function RecordSettleSheet({ recordingId, people, onClose }) {
       .catch(() => { setSaveErr(true); return load().catch(() => {}); });
   }, [load]);
 
-  const baseCur = rec?.base_currency || home;
-  const dual = !!rec?.base_currency && rec.base_currency !== home;
+  // this record's ERA — what its pinned rates convert into (see eraFor)
+  const era = eraFor(rec, home);
+  const baseCur = rec?.base_currency || era;
+  const dual = !!rec?.base_currency && rec.base_currency !== era;
   const recMap = rec ? { [rec.id]: rec } : {};
 
   // Direct pairwise over ALL of the record's shares (settled + unsettled), so a
@@ -133,7 +135,7 @@ export default function RecordSettleSheet({ recordingId, people, onClose }) {
                     style={{ flex: "none", textDecoration: t.paid ? "line-through" : "none" }}
                     primary={<Money n={t.amount} cur={baseCur} style={{ fontSize: 15 }} />}
                     homeAmount={dual ? toHome(t.amount, { recording_id: rec?.id, currency: baseCur, exchange_rate: 1 }, recMap, home) : null}
-                    homeCur={home}
+                    homeCur={era}
                     strike={t.paid}
                   />
                 </button>
