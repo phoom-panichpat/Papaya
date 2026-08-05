@@ -7,7 +7,7 @@
 // performance refactor (the math must not change, only how/when it runs).
 // ═══════════════════════════════════════════════════════════════════════
 import {
-  toHome, buildContributions, pairNet, netByPerson,
+  toHome, buildContributions, pairNet, pairNetByCurrency, netByPerson,
   directTransfers, minimizeTransfers, statusForExpense,
   buildAliasMap, resolveAlias, patchContribsSettled,
 } from "../src/lib/balances-core.mjs";
@@ -159,6 +159,27 @@ const memberRow = (d, itemId, personId) =>
   memberRow(d, "i2", "you").settled_at = "2026-07-01T00:00:00Z";
   check("pairNet: settled shares excluded",
     approx(pairNet(buildContributions(d, HOME), "you", "rui"), 39333.33 * 0.026));
+}
+
+// ── pairNetByCurrency: frozen native nets, one per currency ───────────────
+{
+  const cs = buildContributions(makeData(), HOME);
+  // You↔rui is entirely in the KRW record → one KRW line, rui owes you ₩22,000
+  const ru = pairNetByCurrency(cs, "you", "rui");
+  check("pairNetByCurrency: single currency nets in native, not home",
+    ru.length === 1 && ru[0].currency === "KRW" && approx(ru[0].net, 22000));
+  check("pairNetByCurrency: antisymmetric", approx(pairNetByCurrency(cs, "rui", "you")[0].net, -22000));
+  // You↔marco spans currencies that DON'T net: marco owes ฿300 (dinner) but you
+  // owe €15 (loose EUR) → two separate frozen lines, larger first
+  const ma = pairNetByCurrency(cs, "you", "marco");
+  check("pairNetByCurrency: cross-currency debts stay separate (not merged)",
+    ma.length === 2 &&
+    ma[0].currency === "THB" && approx(ma[0].net, 300) &&
+    ma[1].currency === "EUR" && approx(ma[1].net, -15));
+  // none of this touches home currency → immune to a home-currency change
+  const csUsd = buildContributions(makeData(), "USD");
+  check("pairNetByCurrency: unchanged when home currency changes",
+    approx(pairNetByCurrency(csUsd, "you", "rui")[0].net, 22000));
 }
 
 // ── netByPerson ──────────────────────────────────────────────────────────

@@ -150,6 +150,26 @@ export function pairNet(contribs, aId, bId) {
   return net;
 }
 
+// Direct pairwise net between two people, split BY the debt's own native
+// currency and never converted. A person's balance can span currencies that
+// don't net against each other (a KRW record + a THB loose expense), so a
+// single home figure can't represent it without a conversion that moves when
+// home currency changes. This keeps each debt frozen in the currency it was
+// incurred in. positive net = bId owes aId (mirrors pairNet). Returns one entry
+// per non-zero currency, largest first.
+export function pairNetByCurrency(contribs, aId, bId) {
+  const byCur = {};
+  contribs.forEach((c) => {
+    if (c.settled) return;
+    if (c.debtor === bId && c.creditor === aId) byCur[c.currency] = (byCur[c.currency] || 0) + c.native;
+    else if (c.debtor === aId && c.creditor === bId) byCur[c.currency] = (byCur[c.currency] || 0) - c.native;
+  });
+  return Object.entries(byCur)
+    .map(([currency, net]) => ({ currency, net }))
+    .filter((e) => Math.abs(e.net) > 0.005)
+    .sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+}
+
 // Net per person within an optional scope. positive = is owed, negative = owes.
 // key selects which amount to net in ("home" for global, "base" for a record).
 export function netByPerson(contribs, scope, key = "home") {

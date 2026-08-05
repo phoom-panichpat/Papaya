@@ -4,7 +4,7 @@ import { currencySymbol, padIndex } from "../lib/format";
 import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
 import {
-  loadSettlementData, buildContributions, pairNet,
+  loadSettlementData, buildContributions, pairNet, pairNetByCurrency,
   settleShares, unsettleShares, patchContribsSettled,
 } from "../lib/balances";
 
@@ -112,17 +112,19 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
       .catch(() => { setSaveErr(true); return load().catch(() => {}); });
   }, [load]);
 
-  // net per other person, from You's perspective (positive = they owe you)
+  // Per other person: their debts kept FROZEN in each debt's own native
+  // currency (byCur, never converted), plus a home net used only for the
+  // sort and the faded convenience total. positive = they owe you.
   const rows = self
     ? (people || [])
         .filter((p) => !p.is_self)
-        .map((p) => ({ p, net: pairNet(contribs, self.id, p.id) }))
-        .filter((r) => Math.abs(r.net) > 0.005)
-        .sort((a, b) => b.net - a.net)
+        .map((p) => ({ p, byCur: pairNetByCurrency(contribs, self.id, p.id), homeNet: pairNet(contribs, self.id, p.id) }))
+        .filter((r) => r.byCur.length > 0)
+        .sort((a, b) => b.homeNet - a.homeNet)
     : [];
 
-  const owedToYou = rows.filter((r) => r.net > 0).reduce((s, r) => s + r.net, 0);
-  const youOwe = rows.filter((r) => r.net < 0).reduce((s, r) => s - r.net, 0);
+  const owedToYou = rows.filter((r) => r.homeNet > 0).reduce((s, r) => s + r.homeNet, 0);
+  const youOwe = rows.filter((r) => r.homeNet < 0).reduce((s, r) => s - r.homeNet, 0);
 
   // PersonSettleSheet commit: `rows` = the original member rows to settle
   function commitSettle(rows) {
@@ -292,8 +294,12 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {rows.map(({ p, net }) => {
-              const theyOwe = net > 0;
+            {rows.map(({ p, byCur, homeNet }) => {
+              const single = byCur.length === 1;
+              // each debt shown in its OWN currency (frozen). the faded home line
+              // is the only figure that moves when home currency changes; skip it
+              // when the single debt is already in home currency (nothing to add).
+              const showHomeTotal = byCur.length > 1 || byCur[0].currency !== home;
               return (
                 <div
                   key={p.id}
@@ -303,11 +309,30 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
                   <span style={{ width: 40, height: 40, borderRadius: "50%", background: p.avatar_color || "var(--knob-off)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flex: "none" }}>{p.avatar_emoji || "🙂"}</span>
                   <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
                     <span style={{ fontSize: 16, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.display_name}</span>
-                    <span className="mono" style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: theyOwe ? "var(--settled)" : "var(--open)" }}>
-                      {theyOwe ? "owes you" : "you owe"}
-                    </span>
+                    {single && (
+                      <span className="mono" style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: byCur[0].net > 0 ? "var(--settled)" : "var(--open)" }}>
+                        {byCur[0].net > 0 ? "owes you" : "you owe"}
+                      </span>
+                    )}
                   </span>
-                  <Money n={net} cur={home} color={theyOwe ? "var(--settled)" : "var(--open)"} style={{ fontSize: 18, flex: "none" }} />
+                  <span style={{ flex: "none", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
+                    {byCur.map((e) => {
+                      const they = e.net > 0;
+                      return (
+                        <span key={e.currency} style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
+                          {!single && (
+                            <span className="mono" style={{ fontSize: 8.5, letterSpacing: "0.06em", textTransform: "uppercase", color: they ? "var(--settled)" : "var(--open)" }}>
+                              {they ? "owes you" : "you owe"}
+                            </span>
+                          )}
+                          <Money n={e.net} cur={e.currency} color={they ? "var(--settled)" : "var(--open)"} style={{ fontSize: single ? 18 : 15 }} />
+                        </span>
+                      );
+                    })}
+                    {showHomeTotal && (
+                      <span className="mono" style={{ fontSize: 10, color: "var(--text-4)", marginTop: 1 }}>~ {money(homeNet, home)}</span>
+                    )}
+                  </span>
                 </div>
               );
             })}
@@ -419,9 +444,9 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
                       </span>
                     </span>
                     <DualMoney
-                      primary={<Money n={c.home} cur={home} color={theyOwe ? "var(--settled)" : "var(--open)"} style={{ fontSize: 14, flex: "none" }} />}
-                      homeAmount={c.currency && c.currency !== home ? c.native : null}
-                      homeCur={c.currency}
+                      primary={<Money n={c.native} cur={c.currency} color={theyOwe ? "var(--settled)" : "var(--open)"} style={{ fontSize: 14, flex: "none" }} />}
+                      homeAmount={c.currency && c.currency !== home ? c.home : null}
+                      homeCur={home}
                       style={{ flex: "none", alignItems: "flex-end" }}
                     />
                   </button>

@@ -10,7 +10,7 @@
 import { supabase } from "./supabase";
 
 export {
-  toHome, buildContributions, pairNet, netByPerson, minimizeTransfers, directTransfers, statusForExpense,
+  toHome, buildContributions, pairNet, pairNetByCurrency, netByPerson, minimizeTransfers, directTransfers, statusForExpense,
   buildAliasMap, resolveAlias, patchContribsSettled,
 } from "./balances-core.mjs";
 
