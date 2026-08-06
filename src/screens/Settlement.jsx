@@ -5,7 +5,7 @@ import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
 import {
   loadSettlementData, buildContributions, pairNet, pairNetByEra, sumHomeByEra,
-  settleShares, unsettleShares, patchContribsSettled,
+  settleShares, unsettleShares, patchContribsSettled, grandTotal,
 } from "../lib/balances";
 
 function money(n, cur) {
@@ -286,7 +286,7 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
                       <span style={{ flex: 1, minWidth: 0, fontSize: 15, textDecoration: hasOpen ? "none" : "line-through", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: hasOpen ? "var(--text)" : undefined }}>{e.title}</span>
                       <span style={{ display: "flex", alignItems: "baseline", gap: 2, flex: "none" }}>
                         <span style={{ fontSize: 11, color: hasOpen ? "var(--text-2)" : "var(--text-3)" }}>{currencySymbol(e.currency || home)}</span>
-                        <span className="money" style={{ fontSize: 13, color: hasOpen ? "var(--text)" : "var(--text-3)" }}>{Math.abs(Number(e.total_amount) || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>
+                        <span className="money" style={{ fontSize: 13, color: hasOpen ? "var(--text)" : "var(--text-3)" }}>{Math.abs(grandTotal(e)).toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>
                       </span>
                     </button>
                   );

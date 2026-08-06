@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol, formatMoney, padIndex } from "../lib/format";
-import { statusForExpense, toHome, buildAliasMap, resolveAlias, eraFor } from "../lib/balances";
+import { statusForExpense, toHome, buildAliasMap, resolveAlias, eraFor, grandTotal } from "../lib/balances";
 import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
 
@@ -196,10 +196,10 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
                   primary={
                     <span style={{ display: "flex", alignItems: "baseline", gap: 2 }}>
                       <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(log.currency || base)}</span>
-                      <span className="money" style={{ fontSize: 16 }}>{formatMoney(log.total_amount, log.currency || base)}</span>
+                      <span className="money" style={{ fontSize: 16 }}>{formatMoney(grandTotal(log), log.currency || base)}</span>
                     </span>
                   }
-                  homeAmount={dual ? toHome(log.total_amount, log, recMap, home) : null}
+                  homeAmount={dual ? toHome(grandTotal(log), log, recMap, home) : null}
                   homeCur={era}
                 />
               </div>

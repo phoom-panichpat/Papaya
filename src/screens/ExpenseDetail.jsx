@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol, formatMoney } from "../lib/format";
-import { settleShares, unsettleShares, toHome, buildAliasMap, resolveAlias, eraFor } from "../lib/balances";
+import { settleShares, unsettleShares, toHome, buildAliasMap, resolveAlias, eraFor, grandTotal, serviceCharge, feeFactor } from "../lib/balances";
 import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
 
@@ -72,7 +72,8 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
   const eraDiffers = !!exp && era !== home;
   const cur = exp?.currency || rec?.base_currency || era;
   const recMap = rec ? { [rec.id]: rec } : {};
-  const homeAmount = cur !== era ? toHome(exp.total_amount, exp, recMap, home) : null;
+  // what was actually charged = subtotal + service/VAT (total_amount is only the subtotal)
+  const homeAmount = cur !== era ? toHome(grandTotal(exp), exp, recMap, home) : null;
 
   // per-person breakdown (everyone but the payer): total, settled state, and
   // ALL of the person's (itemId, personId) shares so we can toggle them at once.
@@ -87,7 +88,9 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
         if (!canonRows.has(cid)) canonRows.set(cid, []);
         canonRows.get(cid).push(m);
       });
-      const per = (Number(it.amount) || 0) / canonRows.size;
+      // scaled by feeFactor so these rows match buildContributions (which spreads
+      // the service charge over every item in proportion) — and so Settlement agrees
+      const per = ((Number(it.amount) || 0) * feeFactor(exp)) / canonRows.size;
       const payerCanon = canon(exp.paid_by);
       canonRows.forEach((raws, cid) => {
         if (cid === payerCanon) return;     // payer never owes their own share
@@ -173,7 +176,7 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
                 primary={
                   <span style={{ display: "inline-flex", alignItems: "baseline", gap: 2 }}>
                     <span style={{ fontSize: 18, color: "var(--text-2)" }}>{currencySymbol(cur)}</span>
-                    <span className="money" style={{ fontSize: 42, lineHeight: 1 }}>{formatMoney(exp.total_amount, cur)}</span>
+                    <span className="money" style={{ fontSize: 42, lineHeight: 1 }}>{formatMoney(grandTotal(exp), cur)}</span>
                   </span>
                 }
                 homeAmount={homeAmount}
@@ -210,7 +213,10 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
               // distinct PEOPLE, not raw rows — after a merge two rows can be the
               // same person, and "Who owes" already divides by distinct people
               const ids = [...new Set(rows.map((m) => canon(m.person_id)))];
-              const per = ids.length ? (Number(it.amount) || 0) / ids.length : 0;
+              // fee-inclusive, like "Who owes" below — item amounts here add up to
+              // the grand total shown at the top
+              const itemAmount = (Number(it.amount) || 0) * feeFactor(exp);
+              const per = ids.length ? itemAmount / ids.length : 0;
               const open = openItems.has(it.id);
               return (
                 <div key={it.id} style={{ background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: 14, padding: "13px 15px", marginBottom: 10 }}>
@@ -221,7 +227,7 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
                     </span>
                     <span style={{ display: "flex", alignItems: "baseline", gap: 2 }}>
                       <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(cur)}</span>
-                      <span className="money" style={{ fontSize: 15 }}>{formatMoney(it.amount, cur)}</span>
+                      <span className="money" style={{ fontSize: 15 }}>{formatMoney(itemAmount, cur)}</span>
                     </span>
                   </div>
                   {/* collapsed: who + how many, one line. Tap for the names and the per-head. */}
@@ -256,6 +262,22 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
                 </div>
               );
             })}
+            {/* the fee isn't an item — it's spread across the ones above, so it's
+                stated quietly rather than sitting in the list as another card */}
+            {serviceCharge(exp) > 0 && (
+              <div style={{ padding: "2px 2px 4px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span className="mono" style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)" }}>Service &amp; VAT</span>
+                  <span style={{ display: "flex", alignItems: "baseline", gap: 2, color: "var(--text-3)" }}>
+                    <span style={{ fontSize: 11 }}>{currencySymbol(cur)}</span>
+                    <span className="money" style={{ fontSize: 13 }}>{formatMoney(serviceCharge(exp), cur)}</span>
+                  </span>
+                </div>
+                <div className="mono" style={{ fontSize: 10.5, color: "var(--text-4)", marginTop: 4 }}>
+                  included in the amounts above, in proportion to each item
+                </div>
+              </div>
+            )}
           </div>
 
           {/* who owes — tap a row to toggle settled on/off, in place */}

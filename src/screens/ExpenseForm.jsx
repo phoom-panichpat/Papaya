@@ -3,7 +3,7 @@ import { supabase } from "../lib/supabase";
 import { currencySymbol } from "../lib/format";
 import PeoplePicker from "../components/PeoplePicker";
 import { computePeopleSuggestions } from "../lib/suggestions";
-import { buildAliasMap, resolveAlias, mergePerson, eraFor } from "../lib/balances";
+import { buildAliasMap, resolveAlias, mergePerson, eraFor, feeFactor, grandTotal } from "../lib/balances";
 
 const CURRENCIES = ["THB", "KRW", "USD", "EUR", "JPY", "GBP", "SGD", "MYR", "LAK"];
 
@@ -80,6 +80,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   const [loading, setLoading] = useState(true);
   const [homeCurrency, setHomeCurrency] = useState("THB");
   const [rate, setRate] = useState("");
+  const [feePct, setFeePct] = useState(""); // service & VAT, as a % of the subtotal
   const [sliced, setSliced] = useState(false);
   const [restMembers, setRestMembers] = useState(new Set());
   const [whosIn, setWhosIn] = useState(new Set());
@@ -133,6 +134,10 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
           setCurrency(editCur);
           setAmount(String(e.total_amount ?? "0"));
           setTitle(e.title || "");
+          // the fee is stored as an AMOUNT; the form edits a percentage, so
+          // derive it back from what the subtotal was when it was saved
+          const sc = Number(e.service_charge) || 0, t = Number(e.total_amount) || 0;
+          setFeePct(sc > 0 && t > 0 ? String(+((sc / t) * 100).toFixed(4)) : "");
           // the rate field means native→era, so pre-fill from the pin. Older
           // rows (never pinned) fall back to their stored expense→base rate.
           setRate(e.home_rate ? String(e.home_rate)
@@ -222,7 +227,18 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   }
 
   const total = parseFloat(amount) || 0;
-  const perHead = splitIds.size ? total / splitIds.size : 0;
+  // Service & VAT sits OUTSIDE the split: the items still add up to `total` (the
+  // subtotal), and the fee is spread over them proportionally when balances are
+  // derived. The percentage is what's typed; the amount is only ever displayed.
+  const feeAmount = total * ((parseFloat(feePct) || 0) / 100);
+  // Every per-person figure PREVIEWED on this screen must be fee-inclusive, or
+  // the form shows a number nobody is ever charged. Both come from the money
+  // core's own helpers, fed a synthetic expense, so the preview cannot drift
+  // from what buildContributions actually charges once this is saved.
+  const feeShape = { total_amount: total, service_charge: feeAmount };
+  const charged = grandTotal(feeShape);
+  const feeScale = feeFactor(feeShape);
+  const perHead = splitIds.size ? charged / splitIds.size : 0;
   // This expense's ERA: inherited from the recording it's filed in, so a record
   // started under THB keeps logging in THB even after the user switches home.
   // A loose expense pins the user's current home currency.
@@ -249,15 +265,18 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   const shares = (() => {
     const m = {};
     const add = (id, amt) => { m[id] = (m[id] || 0) + amt; };
+    // Scaled by feeScale for the same reason perHead is: these are what each
+    // person will actually owe, and the saved expense spreads the service
+    // charge across every item in exactly this proportion.
     if (sliced) {
       if (restMembers.size && restAmount > 0) {
-        const per = restAmount / restMembers.size;
+        const per = (restAmount * feeScale) / restMembers.size;
         restMembers.forEach((id) => add(id, per));
       }
       items.forEach((it) => {
         const a = parseFloat(it.amount) || 0;
         if (it.members.size && a > 0) {
-          const per = a / it.members.size;
+          const per = (a * feeScale) / it.members.size;
           it.members.forEach((id) => add(id, per));
         }
       });
@@ -393,7 +412,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
     // recording's currency, so there's no float round-trip.
     const recToEra = baseCurrency !== era ? Number(recording?.exchange_rate) || 1 : 1;
     const expToBase = currency === baseCurrency ? 1 : homeRate / recToEra;
-    const fields = { recording_id: recording?.id || null, paid_by: paidBy, title: title.trim() || ts, total_amount: total, currency, exchange_rate: expToBase, home_rate: homeRate, home_currency: era };
+    const fields = { recording_id: recording?.id || null, paid_by: paidBy, title: title.trim() || ts, total_amount: total, service_charge: feeAmount > 0 ? feeAmount : null, currency, exchange_rate: expToBase, home_rate: homeRate, home_currency: era };
     let exp;
     if (editExpenseId) {
       // editing: update the row and rebuild its split (old items + members cascade-delete)
@@ -521,6 +540,31 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
             </div>
           </div>
         )}
+
+        {/* service & VAT — charged on top of the subtotal, never inside the items */}
+        <div style={{ margin: "10px 20px 6px", background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "var(--r-card)", overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px" }}>
+            <span style={{ fontSize: 15 }}>Service &amp; VAT</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input
+                value={feePct}
+                onChange={(e) => setFeePct(e.target.value.replace(/[^0-9.]/g, ""))}
+                onFocus={() => setKeypadOpen(false)}
+                inputMode="decimal"
+                placeholder="0"
+                style={{ width: 76, height: 30, textAlign: "right", background: "var(--bg)", border: "1px solid var(--hairline)", borderRadius: 8, fontFamily: "var(--font-mono)", fontSize: 13, outline: "none", padding: "0 8px" }}
+              />
+              <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>%</span>
+            </span>
+          </div>
+          <div style={{ padding: "0 16px 14px" }}>
+            <span className="mono" style={{ fontSize: 10.5, color: "var(--text-3)" }}>
+              {feeAmount > 0
+                ? `${currencySymbol(currency)}${total.toLocaleString("en-US", { maximumFractionDigits: 2 })} + ${currencySymbol(currency)}${feeAmount.toLocaleString("en-US", { maximumFractionDigits: 2 })} = ${currencySymbol(currency)}${(total + feeAmount).toLocaleString("en-US", { maximumFractionDigits: 2 })} charged`
+                : "added on top of the total, split in proportion to what each person ordered"}
+            </span>
+          </div>
+        </div>
 
         {/* title — the timestamp shows as a clearable hint, not fixed text */}
         <div style={row} onClick={() => { setKeypadOpen(false); setEditingTitle(true); }}>

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../lib/supabase";
 import { seedDemo } from "../lib/seed";
 import { currencySymbol, formatMoney, padIndex } from "../lib/format";
+import { grandTotal } from "../lib/balances";
 import SaveError from "../components/SaveError";
 
 const ARM_TIMEOUT_MS = 5000; // how long an armed REC toggle waits for its confirming tap
@@ -109,7 +110,7 @@ function RecordingCard({ rec, expanded, onHeader, onToggle, onLogTap, onOpen, ar
               <span className="mono" style={{ fontSize: 10, color: "var(--text-4)", flex: "none" }}>{padIndex(i + 1)}</span>
               <span style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textDecoration: log.settled ? "line-through" : "none", color: log.settled ? "var(--text-3)" : "var(--text)" }}>{log.title}</span>
               <span style={{ flex: 1, borderTop: "1px solid var(--hairline-3)", minWidth: 12, marginTop: 2 }} />
-              <Amount value={log.total_amount} currency={log.currency || rec.base_currency} />
+              <Amount value={grandTotal(log)} currency={log.currency || rec.base_currency} />
             </div>
           ))}
         </div>
@@ -129,7 +130,7 @@ function LooseRow({ exp, expanded, onHeader, onDetail, onArchive }) {
       >
         <span style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textDecoration: exp.settled ? "line-through" : "none", color: exp.settled ? "var(--text-3)" : "var(--text)" }}>{exp.title}</span>
         <span style={{ flex: 1, borderTop: "1px solid var(--hairline-2)", minWidth: 16, marginTop: 2 }} />
-        <Amount value={exp.total_amount} currency={exp.currency} />
+        <Amount value={grandTotal(exp)} currency={exp.currency} />
       </div>
       <Accordion open={expanded}>
         <div style={{ padding: "6px 10px 10px 10px", display: "flex", alignItems: "center", gap: 16 }}>
