@@ -4,6 +4,7 @@ import { currencySymbol } from "../lib/format";
 import PeoplePicker from "../components/PeoplePicker";
 import { computePeopleSuggestions } from "../lib/suggestions";
 import { buildAliasMap, resolveAlias, mergePerson, eraFor } from "../lib/balances";
+import { useBackLayer } from "../lib/backstack.jsx";
 
 const CURRENCIES = ["THB", "KRW", "USD", "EUR", "JPY", "GBP", "SGD", "MYR", "LAK"];
 
@@ -44,6 +45,11 @@ export default function CreateRecording({ people, onClose, editRecordingId = nul
   const [saving, setSaving] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // Hardware back, innermost first.
+  useBackLayer(true, () => onClose(false));
+  useBackLayer(picker, () => setPicker(false));
+  useBackLayer(currencyOpen, () => setCurrencyOpen(false));
 
   useEffect(() => { setLocalPeople(people.filter((p) => !p.merged_into_id)); }, [people]);
   const self = localPeople.find((p) => p.is_self);

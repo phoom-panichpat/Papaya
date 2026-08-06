@@ -4,6 +4,7 @@ import { currencySymbol, formatMoney } from "../lib/format";
 import { settleShares, unsettleShares, toHome, buildAliasMap, resolveAlias, eraFor, grandTotal, serviceCharge, feeFactor } from "../lib/balances";
 import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
+import { useBackLayer } from "../lib/backstack.jsx";
 
 function fullDate(d) {
   return new Date(d).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
@@ -31,6 +32,11 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
   const [saveErr, setSaveErr] = useState(false);
   const chain = useRef(Promise.resolve());          // serializes background settle writes
   const archiving = useRef(false);                  // skip self-reload during archive-close so the button doesn't flip before the pop
+
+  // Hardware back = the back chevron: closes, signalling a refresh if a settle
+  // toggle happened while we were here.
+  useBackLayer(true, () => onClose(dirty));
+  useBackLayer(confirmDel, () => setConfirmDel(false));
 
   const aliasMap = useMemo(() => buildAliasMap(people), [people]);
   const canon = (id) => resolveAlias(id, aliasMap);

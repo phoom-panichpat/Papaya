@@ -4,6 +4,7 @@ import { currencySymbol } from "../lib/format";
 import PeoplePicker from "../components/PeoplePicker";
 import { computePeopleSuggestions } from "../lib/suggestions";
 import { buildAliasMap, resolveAlias, mergePerson, eraFor, feeFactor, grandTotal } from "../lib/balances";
+import { useBackLayer } from "../lib/backstack.jsx";
 
 const CURRENCIES = ["THB", "KRW", "USD", "EUR", "JPY", "GBP", "SGD", "MYR", "LAK"];
 
@@ -283,6 +284,16 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
   const dirty = cleanSig.current !== null && formSig() !== cleanSig.current;
   const goBack = () => (dirty ? setConfirmBack(true) : onClose(false));
+
+  // Hardware back, innermost first. The screen layer routes through `goBack`, so
+  // a back press on a dirty form hits the same discard confirm the back chevron
+  // does — one guard, two triggers.
+  useBackLayer(true, goBack);
+  useBackLayer(keypadOpen, () => setKeypadOpen(false));
+  useBackLayer(!!picker, () => setPicker(null));
+  useBackLayer(!!itemPicker, () => setItemPicker(null));
+  useBackLayer(currencyOpen, () => setCurrencyOpen(false));
+  useBackLayer(confirmBack, () => setConfirmBack(false)); // = "Keep editing"
 
   const carveTotal = items.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
   const restAmount = total - carveTotal;

@@ -7,6 +7,7 @@ import {
 } from "../lib/balances";
 import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
+import { useBackLayer } from "../lib/backstack.jsx";
 
 // Scoped settle for ONE record's party: direct pairwise "who owes who", each row
 // backed by real item shares. Rows toggle paid/unpaid in place (fade + strike),
@@ -19,6 +20,10 @@ export default function RecordSettleSheet({ recordingId, people, onClose }) {
   const [confirmAll, setConfirmAll] = useState(false);
   const [saveErr, setSaveErr] = useState(false);
   const chain = useRef(Promise.resolve()); // serializes background writes
+
+  // Hardware back, innermost first.
+  useBackLayer(true, () => onClose());
+  useBackLayer(confirmAll, () => setConfirmAll(false));
 
   const person = useCallback((id) => (people || []).find((x) => x.id === id), [people]);
   const nameOf = useCallback((id) => {

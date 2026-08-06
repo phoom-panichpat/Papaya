@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { supabase } from "../lib/supabase";
 import { currencySymbol } from "../lib/format";
+import { useBackLayer } from "../lib/backstack.jsx";
 
 // The canonical currency list — kept in sync with ExpenseForm / CreateRecording.
 const CURRENCIES = ["THB", "KRW", "USD", "EUR", "JPY", "GBP", "SGD", "MYR", "LAK"];
@@ -63,6 +64,13 @@ export default function Settings({ people, email = "", homeCurrency: homeCurrenc
   }
 
   function close() { onClose(dirty); }
+
+  // Hardware back, innermost first. Backing out of the typed confirm is a
+  // cancel — the currency change is only ever applied by the button.
+  useBackLayer(true, close);
+  useBackLayer(currencyOpen, () => setCurrencyOpen(false));
+  useBackLayer(!!pending, () => setPending(null));
+  useBackLayer(editingSelf, () => setEditingSelf(false));
 
   const row = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderTop: "1px solid var(--hairline)", minHeight: 56 };
   const label = { fontSize: 15 };

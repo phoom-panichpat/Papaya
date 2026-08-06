@@ -4,6 +4,7 @@ import { currencySymbol, formatMoney, padIndex } from "../lib/format";
 import { statusForExpense, toHome, buildAliasMap, resolveAlias, eraFor, grandTotal } from "../lib/balances";
 import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
+import { useBackLayer } from "../lib/backstack.jsx";
 
 function monthDay(d) {
   return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -34,6 +35,9 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
   const [busy, setBusy] = useState(false);
   const [saveErr, setSaveErr] = useState(false);
   const archiving = useRef(false); // skip self-reload during archive-close so the button doesn't flip before the pop
+
+  // Hardware back = the back chevron: plain close, no refresh.
+  useBackLayer(true, () => onClose(false));
 
   const aliasMap = useMemo(() => buildAliasMap(people), [people]);
 

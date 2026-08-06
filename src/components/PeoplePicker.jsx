@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { MergeConfirmSheet } from "../screens/People";
+import { useBackLayer } from "../lib/backstack.jsx";
 
 function Avatar({ p, selected }) {
   const label = p.is_self ? "You" : p.display_name;
@@ -27,6 +28,12 @@ export default function PeoplePicker({ people, selectedIds, multi = true, member
   const [mergeMode, setMergeMode] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [confirmMerge, setConfirmMerge] = useState(false);
+
+  // The picker's own open/close is the parent's back layer (it owns the state
+  // that renders us) — we register only what's dismissible inside it.
+  useBackLayer(mergeMode, () => { setMergeMode(false); setSelected(new Set()); setQ(""); });
+  useBackLayer(confirmMerge, () => setConfirmMerge(false));
+
   const query = q.trim().toLowerCase();
   const match = (p) => p.display_name.toLowerCase().includes(query) || (p.is_self && "you".includes(query));
   // You first (most-tapped), then alphabetical — a stable, predictable order so

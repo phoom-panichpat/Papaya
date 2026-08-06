@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabase";
 import { currencySymbol, padIndex } from "../lib/format";
 import { loadSettlementData, buildContributions, pairNetByEra, sumHomeByEra, buildAliasMap, resolveAlias, unmergePerson } from "../lib/balances";
 import { EditSheet } from "./People";
+import { useBackLayer } from "../lib/backstack.jsx";
 
 function relTime(iso) {
   const d = new Date(iso), now = new Date();
@@ -34,6 +35,11 @@ export default function PersonDetail({ personId, people, onClose, onOpenExpense,
   const [editing, setEditing] = useState(false);
   const [unmergeSheet, setUnmergeSheet] = useState(false);
   const [busyId, setBusyId] = useState(null);
+
+  // Hardware back, innermost first.
+  useBackLayer(true, () => onClose(false));
+  useBackLayer(editing, () => setEditing(false));
+  useBackLayer(unmergeSheet, () => setUnmergeSheet(false));
 
   const self = (people || []).find((p) => p.is_self);
   const person = useCallback((id) => (people || []).find((x) => x.id === id), [people]);

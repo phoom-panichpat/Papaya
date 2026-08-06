@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "./lib/supabase";
+import { useBackLayer, BACK_LEVEL } from "./lib/backstack.jsx";
 import Home from "./screens/Home";
 import ExpenseForm from "./screens/ExpenseForm";
 import People from "./screens/People";
@@ -235,6 +236,13 @@ export default function App() {
 
   useEffect(() => { loadProfile(); }, [loadProfile]);
 
+  // Hardware back: a bottom tab other than Home is a layer, so back returns to
+  // Home and only THEN exits the app (the Android convention). Pushed overlay
+  // screens register their own layers — each one owns its back semantics,
+  // guards included (see ExpenseForm's discard confirm).
+  useBackLayer(tab !== "home", () => setTab("home"), BACK_LEVEL.TAB);
+  useBackLayer(!!stub, () => setStub(null));
+
   if (loading) return <Splash />;
   if (!session) return <AuthScreen />;
 
@@ -281,6 +289,7 @@ export default function App() {
           <div style={{ position: "absolute", inset: 0, display: tab === "people" ? "block" : "none" }}>
             <People
               people={people}
+              active={tab === "people"}
               refreshKey={refreshKey}
               onChanged={() => { loadPeople(); setRefreshKey((k) => k + 1); }}
               onOpenPerson={(id) => push({ type: "personDetail", id })}
@@ -289,7 +298,7 @@ export default function App() {
         )}
         {visited.settlement && (
           <div style={{ position: "absolute", inset: 0, display: tab === "settlement" ? "block" : "none" }}>
-            <Settlement people={people} refreshKey={refreshKey} onLoaded={tab === "settlement" ? handleLoaded : undefined} onOpenExpense={openExpense} onOpenRecording={(id) => push({ type: "recordingDetail", id })} />
+            <Settlement people={people} active={tab === "settlement"} refreshKey={refreshKey} onLoaded={tab === "settlement" ? handleLoaded : undefined} onOpenExpense={openExpense} onOpenRecording={(id) => push({ type: "recordingDetail", id })} />
           </div>
         )}
       </div>

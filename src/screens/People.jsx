@@ -2,12 +2,16 @@ import { useState } from "react";
 import { supabase } from "../lib/supabase";
 import { padIndex } from "../lib/format";
 import { mergePerson } from "../lib/balances";
+import { useBackLayer } from "../lib/backstack.jsx";
 
 const EMOJI = ["🙂", "🦊", "🐢", "🐝", "🐙", "🐳", "🦉", "🐼", "🦄", "🐧", "🐰", "🐨", "🦁", "🐸", "🦋", "🌸"];
 
 // The canonical people roster: accounts vs placeholders, add / rename / remove.
 // (Token merge + claim-to-account are a later refinement — noted in CLAUDE.md.)
-export default function People({ people, refreshKey, onChanged, onOpenPerson }) {
+// `active` = this tab is the visible one. Tab screens stay MOUNTED when hidden
+// (see App's lazy-mount-and-stay), so their back layers must be gated on it —
+// otherwise a sheet left open here would swallow a back press taken on Home.
+export default function People({ people, refreshKey, onChanged, onOpenPerson, active = true }) {
   const [seg, setSeg] = useState("all"); // all | accounts | placeholders
   const [q, setQ] = useState("");
   const [adding, setAdding] = useState(false);
@@ -66,6 +70,11 @@ export default function People({ people, refreshKey, onChanged, onOpenPerson }) 
     setSelected(new Set());
     setConfirmMerge(false);
   }
+
+  // Hardware back, innermost first.
+  useBackLayer(active && adding, () => setAdding(false));
+  useBackLayer(active && mergeMode, exitMergeMode);
+  useBackLayer(active && confirmMerge, () => setConfirmMerge(false));
 
   async function doMerge(target) {
     if (!target || merging) return;
@@ -216,6 +225,10 @@ export function EditSheet({ title, person, refCount = 0, onSave, onRemove, onClo
   const [emoji, setEmoji] = useState(person?.avatar_emoji || "🙂");
   const [confirmRemove, setConfirmRemove] = useState(false);
   const canSave = name.trim().length > 0;
+
+  // The sheet's own open/close is the PARENT's back layer (it owns the state that
+  // renders us) — we only register what's dismissible inside it.
+  useBackLayer(confirmRemove, () => setConfirmRemove(false));
 
   return (
     <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "var(--scrim-sheet)", zIndex: 50, animation: "fadeIn 140ms ease" }}>

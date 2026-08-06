@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabase";
 import { currencySymbol, padIndex } from "../lib/format";
 import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
+import { useBackLayer } from "../lib/backstack.jsx";
 import {
   loadSettlementData, buildContributions, pairNet, pairNetByEra, sumHomeByEra,
   settleShares, unsettleShares, patchContribsSettled, grandTotal,
@@ -37,7 +38,8 @@ function Money({ n, cur, color, style = {} }) {
 }
 
 // ── the global tab: direct pairwise balances between You and each person ──
-export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRecording, onLoaded }) {
+// `active` = this tab is the visible one — see the note in People.jsx.
+export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRecording, onLoaded, active = true }) {
   const [home, setHome] = useState("THB");
   const [contribs, setContribs] = useState([]);
   const [data, setData] = useState(null);
@@ -49,6 +51,10 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
   const [histSeg, setHistSeg] = useState("settled"); // settled | records | expenses
   const [histQ, setHistQ] = useState("");
   const chain = useRef(Promise.resolve()); // serializes background writes
+
+  // Hardware back closes an open sheet.
+  useBackLayer(active && !!openPid, () => setOpenPid(null));
+  useBackLayer(active && !!openEvent, () => setOpenEvent(null));
 
   const self = (people || []).find((p) => p.is_self);
   const person = useCallback((id) => (people || []).find((x) => x.id === id), [people]);
