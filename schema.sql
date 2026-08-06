@@ -72,7 +72,14 @@ create table expenses (
   recording_id  uuid references recordings(id) on delete set null,
   paid_by       uuid not null references people(id),
   title         text not null,
-  total_amount  numeric not null,
+  total_amount  numeric not null,  -- the SUBTOTAL: what the items add up to (excludes service_charge)
+  -- Service charge / VAT / any extra fee, in this expense's own currency.
+  -- Kept OUT of total_amount and out of item amounts so it stays a visible,
+  -- editable fact rather than being silently baked into the split. Allocated
+  -- PROPORTIONALLY to each item's subtotal at derive time (see feeFactor in
+  -- balances-core.mjs) — whoever ordered the expensive dish carries more of it.
+  -- null = no fee, which is why adding this column moved no existing balance.
+  service_charge numeric,
   currency      text,     -- null = inherit recording base / home
   exchange_rate numeric,  -- expense currency → recording base (pre-fill / edit default)
   -- THE CURRENCY INVARIANT: this expense's OWN native→home rate, PINNED at

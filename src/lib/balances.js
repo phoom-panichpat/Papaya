@@ -13,6 +13,7 @@ export {
   toHome, buildContributions, pairNet, pairNetByCurrency, pairNetByEra, sumHomeByEra,
   netByPerson, minimizeTransfers, directTransfers, statusForExpense,
   buildAliasMap, resolveAlias, patchContribsSettled, eraFor,
+  serviceCharge, grandTotal, feeFactor,
 } from "./balances-core.mjs";
 
 // ── load everything the money layer needs ────────────────────────────────

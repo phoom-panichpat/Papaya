@@ -11,6 +11,7 @@ import {
   directTransfers, minimizeTransfers, statusForExpense,
   buildAliasMap, resolveAlias, patchContribsSettled, eraFor,
   pairNetByEra, sumHomeByEra,
+  serviceCharge, grandTotal, feeFactor,
 } from "../src/lib/balances-core.mjs";
 
 let pass = 0, fail = 0;
@@ -475,6 +476,94 @@ const taxiShare = (d) => buildContributions(d, HOME).find((c) => c.debtor === "y
       approx(o.home, newCs[i].home, 0.0001) &&
       approx(o.base, newCs[i].base, 0.0001) &&
       approx(o.native, newCs[i].native, 0.0001)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SERVICE CHARGE / VAT — allocated proportionally, never per head
+// ═══════════════════════════════════════════════════════════════════════
+// The scenario the feature exists for: a ฿1,000 dinner where ฿700 is shared by
+// all three and a ฿300 bottle of wine is for two of them, plus 10% service and
+// 7% VAT compounded = ฿177 of fees. Sofia didn't drink the wine, so she must
+// carry LESS of the fee than Rui — that is the whole point of allocating
+// proportionally to each item's subtotal instead of splitting fees per head.
+{
+  const feeData = (charge) => ({
+    people: [{ id: "you", is_self: true }, { id: "rui" }, { id: "sofia" }],
+    recordings: [],
+    expenses: [{
+      id: "f1", recording_id: null, currency: "THB", paid_by: "you",
+      total_amount: 1000, service_charge: charge, home_rate: 1, home_currency: "THB",
+    }],
+    items: [
+      { id: "fr", expense_id: "f1", amount: 700, is_rest: true },
+      { id: "fw", expense_id: "f1", amount: 300 },
+    ],
+    members: [
+      { item_id: "fr", person_id: "you" }, { item_id: "fr", person_id: "rui" }, { item_id: "fr", person_id: "sofia" },
+      { item_id: "fw", person_id: "you" }, { item_id: "fw", person_id: "rui" },
+    ],
+    settlements: [],
+  });
+  const owed = (cs, pid) => cs.filter((c) => c.debtor === pid).reduce((s, c) => s + c.home, 0);
+
+  // ── helpers ──
+  const exp = feeData(177).expenses[0];
+  check("fee: grandTotal = subtotal + charge", grandTotal(exp) === 1177);
+  check("fee: serviceCharge reads the column", serviceCharge(exp) === 177);
+  check("fee: feeFactor = grand / subtotal", approx(feeFactor(exp), 1.177, 0.0001));
+
+  // ── MIGRATION SAFETY: a null charge must move nothing ──
+  // Every pre-migration row has service_charge null, so this is the assertion
+  // that made adding the column safe to deploy against real trip data.
+  const noFee = buildContributions(feeData(null), HOME);
+  const noCol = buildContributions((() => {
+    const d = feeData(null);
+    delete d.expenses[0].service_charge; // as if the column did not exist
+    return d;
+  })(), HOME);
+  check("fee: null charge ⇒ identical to the column not existing",
+    noFee.length === noCol.length && noFee.every((c, i) => approx(c.home, noCol[i].home, 0.000001)));
+  check("fee: null charge ⇒ untouched split (sofia owes 700/3)", approx(owed(noFee, "sofia"), 233.333));
+  check("fee: null charge ⇒ untouched split (rui owes 700/3 + 300/2)", approx(owed(noFee, "rui"), 383.333));
+
+  // ── PROPORTIONAL, not per head ──
+  const cs = buildContributions(feeData(177), HOME);
+  const sofia = owed(cs, "sofia"), rui = owed(cs, "rui");
+  check("fee: sofia owes her subtotal × 1.177", approx(sofia, 233.333 * 1.177));
+  check("fee: rui owes his subtotal × 1.177", approx(rui, 383.333 * 1.177));
+  // Splitting the ฿177 per head would give sofia 233.33 + 59 = 292.33.
+  check("fee: sofia is NOT charged an equal per-head slice of the fee", !approx(sofia, 292.333, 1));
+  check("fee: the wine drinker carries more of the fee than the non-drinker",
+    (rui - 383.333) > (sofia - 233.333));
+
+  // The payer's own share never becomes a contribution, so add it back to prove
+  // the whole fee is accounted for and none of it is invented or lost.
+  const youSubtotal = 700 / 3 + 300 / 2;
+  const allocated = (sofia - 233.333) + (rui - 383.333) + (youSubtotal * 1.177 - youSubtotal);
+  check("fee: every ฿ of the charge is allocated, none invented", approx(allocated, 177));
+
+  // ── guards: a corrupt or absent charge means "no fee", never a broken split ──
+  [null, undefined, 0, -50, NaN, "abc"].forEach((bad) => {
+    check(`fee: charge ${String(bad)} ⇒ factor 1`, feeFactor(feeData(bad).expenses[0]) === 1);
+  });
+  check("fee: zero subtotal ⇒ factor 1, not a divide-by-zero",
+    feeFactor({ total_amount: 0, service_charge: 100 }) === 1);
+
+  // ── the fee rides through the currency layers ──
+  // home/base/native all derive from the scaled native amount, so an in-record
+  // foreign expense settles fee-inclusive in the record's base currency too.
+  const recData = (() => {
+    const d = feeData(177);
+    d.recordings = [{ id: "r1", base_currency: "KRW", exchange_rate: 0.026, home_currency: "THB" }];
+    d.expenses[0] = { ...d.expenses[0], recording_id: "r1", currency: "KRW", home_rate: 0.026 };
+    return d;
+  })();
+  const rc = buildContributions(recData, HOME);
+  const sofiaRec = rc.find((c) => c.debtor === "sofia");
+  check("fee: native scales with the fee", approx(sofiaRec.native, 233.333 * 1.177));
+  check("fee: home scales with the fee", approx(sofiaRec.home, 233.333 * 1.177 * 0.026, 0.001));
+  check("fee: base (what an in-record settle charges) scales with the fee",
+    approx(sofiaRec.base, 233.333 * 1.177));
 }
 
 // ─────────────────────────────────────────────────────────────────────────

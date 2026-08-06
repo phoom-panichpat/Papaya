@@ -44,6 +44,47 @@ export function eraFor(recording, homeCurrency) {
   return recording?.home_currency || homeCurrency;
 }
 
+// ── service charge / VAT ─────────────────────────────────────────────────
+// A restaurant bill is printed as items, then fees below: ฿1,000 of food,
+// +10% service, +7% VAT. `expenses.total_amount` stays the SUBTOTAL (what the
+// items add up to, which is what "the rest" auto-fills against) and
+// `expenses.service_charge` holds the fee in the same native currency. That
+// keeps the fee a visible fact — the detail screen can show "฿1,000 + ฿177" —
+// instead of silently baked into item amounts where it could never be shown,
+// edited, or removed again.
+//
+// The fee is allocated PROPORTIONALLY to each item's subtotal, not split
+// equally: whoever ordered the ฿500 wine carries half the service charge.
+// Proportional allocation is arithmetically identical to scaling every item by
+// one factor, which is why this costs the money core five lines rather than a
+// new allocation engine.
+//
+// A null/0/negative/NaN charge means "no fee" — the same defensive stance
+// toHome takes on a corrupt rate pin, and the reason the migration that adds
+// this column moves no existing balance: every row starts null → factor 1.
+
+export function serviceCharge(expense) {
+  const v = Number(expense?.service_charge);
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+// What was actually charged: subtotal + fee, in the expense's native currency.
+// This is the figure to DISPLAY as "the amount" — total_amount alone understates
+// what the payer put on their card.
+export function grandTotal(expense) {
+  return (Number(expense?.total_amount) || 0) + serviceCharge(expense);
+}
+
+// Multiplier taking an item's subtotal amount to its fee-inclusive share.
+// Guarded against a zero subtotal (a fee with nothing to spread it over has no
+// proportional answer, so charge nobody rather than divide by zero).
+export function feeFactor(expense) {
+  const sub = Number(expense?.total_amount) || 0;
+  if (sub <= 0) return 1;
+  const f = grandTotal(expense) / sub;
+  return Number.isFinite(f) && f > 0 ? f : 1;
+}
+
 // ── alias resolution (person merge) ──────────────────────────────────────
 // A person can be pointed at another via `merged_into_id` (e.g. a placeholder
 // token merged into a real account). This is NON-DESTRUCTIVE: the row stays,
@@ -94,7 +135,11 @@ export function buildContributions(data, homeCurrency) {
     const rec = exp.recording_id ? recMap[exp.recording_id] : null;
     const baseCurrency = rec?.base_currency || homeCurrency;
     const expCur = exp.currency || baseCurrency;
-    const nativeAmt = Number(it.amount) || 0;
+    // Item amounts are stored EXCLUDING the expense's service charge / VAT;
+    // scaling by feeFactor here allocates that fee proportionally to every
+    // item, so it flows into home/base/native and every downstream net for
+    // free. No fee (the default, and every pre-migration row) ⇒ factor 1.
+    const nativeAmt = (Number(it.amount) || 0) * feeFactor(exp);
     const homeAmt = toHome(nativeAmt, exp, recMap, homeCurrency);
     // The ERA: which currency this expense's home amount is denominated in.
     // `home_rate` records a rate but not what it points at, so without this a
