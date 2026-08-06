@@ -121,7 +121,11 @@ export default function PersonDetail({ personId, people, onClose, onOpenExpense,
   async function rename(name, emoji) {
     await supabase.from("people").update({ display_name: name, avatar_emoji: emoji }).eq("id", personId);
     setEditing(false);
-    await load(); // refresh local view
+    // The name/emoji we render come from the `people` PROP, not from load()'s
+    // settlement data — so a local load() can't show the new name. Only App owns
+    // the roster: onChanged reloads it (and bumps refreshKey, which re-runs load
+    // for us). Same call unmerge() below already makes.
+    onChanged?.();
   }
   async function remove() {
     await supabase.from("people").delete().eq("id", personId);

@@ -2,7 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <!-- NO viewport-fit=cover. With it, the layout viewport extends UNDER Android's
+       system navigation bar (and any notch), so the bottom nav + every bottom-anchored
+       sheet renders behind it and the page gains phantom scroll. We have no edge-to-edge
+       artwork to gain from cover, and the default (contain) insets the viewport to the
+       safe area automatically — which fixes all ~16 bottom-anchored elements at once
+       without a single env(safe-area-inset-*) anywhere. Only reintroduce cover together
+       with safe-area padding on every one of them. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
