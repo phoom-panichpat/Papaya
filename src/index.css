@@ -40,7 +40,13 @@
 
 /* ── reset ────────────────────────────────────────────────────────────── */
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-html, body { height: 100%; }
+/* The document itself must NEVER scroll — the app is a fixed shell with its own
+   scrolling regions inside. Without this, Android reloads the PWA with a layout
+   viewport that still includes the system nav-bar strip, the shell ends up
+   taller than what's visible, and the page scrolls the bottom nav underneath
+   the system bar. overscroll-behavior also kills pull-to-refresh, which is the
+   gesture that put the viewport into that state. */
+html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
 
 body {
   background: var(--frame);
@@ -50,13 +56,17 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* position:fixed + inset:0 sizes the shell against the viewport DIRECTLY, instead
+   of asking for 100dvh — which Android measures once on load and doesn't always
+   re-settle after the system bars appear. Over-constrained (left+right+max-width)
+   with margin:auto still centers it on wide screens. */
 #root {
+  position: fixed;
+  inset: 0;
+  width: 100%;
   max-width: 430px;
   margin: 0 auto;
-  min-height: 100vh;
-  min-height: 100dvh;
   background: var(--bg);
-  position: relative;
   overflow: hidden;
 }
 

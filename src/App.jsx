@@ -15,7 +15,7 @@ import PersonDetail from "./screens/PersonDetail";
 // ─── Splash ────────────────────────────────────────────────────────────────
 function Splash() {
   return (
-    <div style={{ height: "100dvh", display: "grid", placeItems: "center", background: "var(--bg)" }}>
+    <div style={{ height: "100%", display: "grid", placeItems: "center", background: "var(--bg)" }}>
       <span style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.01em" }}>Papaya</span>
     </div>
   );
@@ -73,7 +73,9 @@ function AuthScreen() {
   };
 
   return (
-    <div style={{ minHeight: "100dvh", display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px", gap: 20 }}>
+    // the shell no longer lets the document scroll, so this one scrolls itself
+    // (keyboard open on a short screen would otherwise clip the form)
+    <div style={{ minHeight: "100%", maxHeight: "100%", overflowY: "auto", display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px", gap: 20 }}>
       <div style={{ textAlign: "center" }}>
         <h1 style={{ fontSize: 30, fontWeight: 600, letterSpacing: "-0.02em" }}>Papaya</h1>
         <p style={{ color: "var(--text-2)", fontSize: 14, marginTop: 4 }}>Split expenses with friends</p>
@@ -269,7 +271,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
         {visited.home && (
           <div style={{ position: "absolute", inset: 0, display: tab === "home" ? "block" : "none" }}>
