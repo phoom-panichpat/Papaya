@@ -25,6 +25,7 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
   const [home, setHome] = useState("THB");
   const [loading, setLoading] = useState(true);
   const [confirmDel, setConfirmDel] = useState(false);
+  const [openItems, setOpenItems] = useState(new Set()); // "Made up of" cards — collapsed by default
   const [busy, setBusy] = useState(false);          // delete/archive only — settle toggles are optimistic
   const [dirty, setDirty] = useState(false);        // signal underlying refresh on close
   const [saveErr, setSaveErr] = useState(false);
@@ -206,7 +207,11 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
             <div className="legend" style={{ marginBottom: 10 }}>Made up of</div>
             {items.map((it) => {
               const rows = membersByItem[it.id] || [];
-              const per = rows.length ? (Number(it.amount) || 0) / rows.length : 0;
+              // distinct PEOPLE, not raw rows — after a merge two rows can be the
+              // same person, and "Who owes" already divides by distinct people
+              const ids = [...new Set(rows.map((m) => canon(m.person_id)))];
+              const per = ids.length ? (Number(it.amount) || 0) / ids.length : 0;
+              const open = openItems.has(it.id);
               return (
                 <div key={it.id} style={{ background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: 14, padding: "13px 15px", marginBottom: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -219,21 +224,34 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
                       <span className="money" style={{ fontSize: 15 }}>{formatMoney(it.amount, cur)}</span>
                     </span>
                   </div>
-                  <div style={{ marginTop: 9, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                    <span style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                      {[...new Set(rows.map((m) => canon(m.person_id)))].map((cid) => {
-                         const p = person(cid);
-                         return (
-                           <span key={cid} title={nameOf(cid)} style={{ display: "flex", alignItems: "center", gap: 4, background: "var(--bg)", borderRadius: 999, padding: "3px 9px 3px 3px" }}>
-                             <span style={{ width: 18, height: 18, borderRadius: "50%", background: p?.avatar_color || "var(--knob-off)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9 }}>{p?.avatar_emoji || "🙂"}</span>
-                             <span style={{ fontSize: 11, color: "var(--text-2)" }}>{nameOf(cid)}</span>
-                           </span>
-                         );
-                       })}
-                    </span>
-                    {rows.length > 0 && (
-                      <span className="mono" style={{ fontSize: 10, color: "var(--text-3)", flex: "none" }}>{currencySymbol(cur)}{per.toLocaleString("en-US", { maximumFractionDigits: 2 })} ea</span>
+                  {/* collapsed: who + how many, one line. Tap for the names and the per-head. */}
+                  <div
+                    onClick={() => setOpenItems((s) => { const n = new Set(s); n.has(it.id) ? n.delete(it.id) : n.add(it.id); return n; })}
+                    style={{ marginTop: 9, display: "flex", alignItems: open ? "flex-start" : "center", justifyContent: "space-between", gap: 8, cursor: "pointer" }}
+                  >
+                    {open ? (
+                      <span style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                        {ids.map((cid) => {
+                           const p = person(cid);
+                           return (
+                             <span key={cid} title={nameOf(cid)} style={{ display: "flex", alignItems: "center", gap: 4, background: "var(--bg)", borderRadius: 999, padding: "3px 9px 3px 3px" }}>
+                               <span style={{ width: 18, height: 18, borderRadius: "50%", background: p?.avatar_color || "var(--knob-off)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9 }}>{p?.avatar_emoji || "🙂"}</span>
+                               <span style={{ fontSize: 11, color: "var(--text-2)" }}>{nameOf(cid)}</span>
+                             </span>
+                           );
+                         })}
+                      </span>
+                    ) : (
+                      <span className="legend" style={{ color: "var(--text-3)" }}>
+                        {ids.length ? `${String(ids.length).padStart(2, "0")} people` : "nobody"}
+                      </span>
                     )}
+                    <span style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
+                      {open && ids.length > 0 && (
+                        <span className="mono" style={{ fontSize: 10, color: "var(--text-3)" }}>{currencySymbol(cur)}{per.toLocaleString("en-US", { maximumFractionDigits: 2 })} ea</span>
+                      )}
+                      <span className="mono" style={{ fontSize: 9, color: "var(--text-4)" }}>{open ? "⌃" : "⌄"}</span>
+                    </span>
                   </div>
                 </div>
               );

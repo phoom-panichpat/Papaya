@@ -45,6 +45,20 @@ function Cluster({ ids, people }) {
   );
 }
 
+// "another item for these same people" — quiet by design; the one accent on this
+// screen is Save.
+function ChainBtn({ onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="mono"
+      style={{ flex: "none", display: "flex", alignItems: "center", gap: 4, height: 26, padding: "0 9px", borderRadius: 999, border: "1px solid var(--hairline)", background: "var(--bg)", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)" }}
+    >
+      <span style={{ fontSize: 13, lineHeight: 1 }}>+</span>same people
+    </button>
+  );
+}
+
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "back"];
 
 export default function ExpenseForm({ people, onClose, forceRecordingId = null, editExpenseId = null }) {
@@ -313,6 +327,13 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   function addItem() {
     setItems((l) => [...l, { id: ++idRef.current, label: "", amount: "", members: new Set() }]);
   }
+  // chain: a second item for the same people (mixers for the whisky drinkers).
+  // Copies the member set only — label and amount start empty.
+  function chainItem(from) {
+    const src = from === "rest" ? restMembers : items.find((it) => it.id === from)?.members;
+    if (!src) return;
+    setItems((l) => [...l, { id: ++idRef.current, label: "", amount: "", members: new Set(src) }]);
+  }
   function removeItem(id) {
     setItems((l) => l.filter((it) => it.id !== id));
   }
@@ -331,16 +352,21 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
       }));
     }
   }
-  // "Everyone" = the recording's members (not the whole friends list).
-  // For a loose expense there's no group, so the chip isn't rendered at all.
+  // In sliced mode "Everyone" means everyone in THIS EXPENSE (Who's in), not the
+  // whole recording — if four of the eight on a trip are at this dinner, the wine
+  // item is chosen from those four. Who's in always exists here (entering sliced
+  // mode seeds it), so the chip works on a loose expense too.
   function setTargetAll(target, on) {
-    const set = new Set(on ? members : []);
+    const set = new Set(on ? whosIn : []);
     if (target === "rest") setRestMembers(set);
     else setItems((l) => l.map((it) => (it.id === target ? { ...it, members: new Set(set) } : it)));
   }
-  function addTargetPeople(target, ids) {
-    if (target === "rest") setRestMembers((s) => new Set([...s, ...ids]));
-    else setItems((l) => l.map((it) => (it.id === target ? { ...it, members: new Set([...it.members, ...ids]) } : it)));
+  // Suggestion chips assemble the roster, so on a loose expense they live on the
+  // Who's in picker (item pickers pare that roster down instead). New joiners
+  // default into the rest, same as tapping them in one at a time.
+  function addWhosInPeople(ids) {
+    setWhosIn((s) => new Set([...s, ...ids]));
+    setRestMembers((s) => new Set([...s, ...ids]));
   }
   function addSplitPeople(ids) {
     setSplitIds((s) => new Set([...s, ...ids]));
@@ -565,9 +591,12 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
                   <span className="money" style={{ fontSize: 15 }}>{restAmount.toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>
                 </span>
               </div>
-              <div onClick={() => setItemPicker("rest")} style={{ marginTop: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
-                <Cluster ids={[...restMembers]} people={localPeople} />
-                <span className="legend">{restMembers.size} in</span>
+              <div onClick={() => setItemPicker("rest")} style={{ marginTop: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                  <Cluster ids={[...restMembers]} people={localPeople} />
+                  <span className="legend">{restMembers.size} in</span>
+                </span>
+                {restMembers.size > 0 && <ChainBtn onClick={(e) => { e.stopPropagation(); chainItem("rest"); }} />}
               </div>
             </div>
 
@@ -580,15 +609,18 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
                   <input value={it.amount} onChange={(e) => updateItem(it.id, "amount", e.target.value.replace(/[^0-9.]/g, ""))} onFocus={() => setKeypadOpen(false)} inputMode="decimal" placeholder="0" style={{ width: 68, textAlign: "right", background: "none", border: "none", outline: "none", fontFamily: "var(--font-money)", fontWeight: 800, fontSize: 15 }} />
                   <button onClick={() => removeItem(it.id)} style={{ width: 24, height: 24, borderRadius: "50%", color: "var(--text-3)", fontSize: 13, flex: "none" }}>✕</button>
                 </div>
-                <div onClick={() => setItemPicker(it.id)} style={{ marginTop: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
-                  {it.members.size ? (
-                    <>
-                      <Cluster ids={[...it.members]} people={localPeople} />
-                      <span className="legend">{it.members.size} in</span>
-                    </>
-                  ) : (
-                    <span className="legend" style={{ color: "var(--text-3)" }}>+ who's in?</span>
-                  )}
+                <div onClick={() => setItemPicker(it.id)} style={{ marginTop: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                    {it.members.size ? (
+                      <>
+                        <Cluster ids={[...it.members]} people={localPeople} />
+                        <span className="legend">{it.members.size} in</span>
+                      </>
+                    ) : (
+                      <span className="legend" style={{ color: "var(--text-3)" }}>+ who's in?</span>
+                    )}
+                  </span>
+                  {it.members.size > 0 && <ChainBtn onClick={(e) => { e.stopPropagation(); chainItem(it.id); }} />}
                 </div>
               </div>
             ))}
@@ -687,6 +719,9 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
           memberIds={members}
           title="Who's in"
           onToggle={toggleWhosIn}
+          onEveryone={recording ? () => addWhosInPeople(members) : undefined}
+          suggestions={!recording ? suggestions : []}
+          onAddPeople={!recording ? addWhosInPeople : undefined}
           onClose={() => setPicker(null)}
           onCreate={createPersonWhosIn}
           onMergePeople={editExpenseId ? mergePeople : undefined}
@@ -702,13 +737,15 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
             people={localPeople}
             selectedIds={cur}
             multi
-            memberIds={members}
+            /* the group to pare down is this expense's roster, not the record's.
+               Assembling the roster happens in the Who's in picker above — which
+               is why the suggestion chips live there and not here. */
+            memberIds={[...whosIn]}
+            memberLabel="In this expense"
             title={isRest ? "Who splits the rest?" : "Who's in?"}
             onToggle={(p) => toggleItemMember(itemPicker, p)}
-            onEveryone={recording ? () => setTargetAll(itemPicker, true) : undefined}
-            onClear={recording ? () => setTargetAll(itemPicker, false) : undefined}
-            suggestions={!recording ? suggestions : []}
-            onAddPeople={!recording ? (ids) => addTargetPeople(itemPicker, ids) : undefined}
+            onEveryone={() => setTargetAll(itemPicker, true)}
+            onClear={() => setTargetAll(itemPicker, false)}
             onClose={() => setItemPicker(null)}
             onCreate={createPersonForItem}
             onMergePeople={editExpenseId ? mergePeople : undefined}

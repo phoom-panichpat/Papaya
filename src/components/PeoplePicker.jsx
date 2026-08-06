@@ -22,17 +22,27 @@ function Avatar({ p, selected }) {
   );
 }
 
-export default function PeoplePicker({ people, selectedIds, multi = true, memberIds = [], title = "Who's in", onToggle, onClose, onCreate, onEveryone, onClear, suggestions = [], onAddPeople, onMergePeople }) {
+export default function PeoplePicker({ people, selectedIds, multi = true, memberIds = [], memberLabel = "In this recording", title = "Who's in", onToggle, onClose, onCreate, onEveryone, onClear, suggestions = [], onAddPeople, onMergePeople }) {
   const [q, setQ] = useState("");
   const [mergeMode, setMergeMode] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [confirmMerge, setConfirmMerge] = useState(false);
   const query = q.trim().toLowerCase();
   const match = (p) => p.display_name.toLowerCase().includes(query) || (p.is_self && "you".includes(query));
-  const filtered = query ? people.filter(match) : people;
+  // You first (most-tapped), then alphabetical — a stable, predictable order so
+  // the same person is always in the same place across every picker.
+  const byName = (a, b) =>
+    (b.is_self ? 1 : 0) - (a.is_self ? 1 : 0) ||
+    (a.display_name || "").localeCompare(b.display_name || "", undefined, { sensitivity: "base" });
+  const ordered = [...people].sort(byName);
+  const filtered = query ? ordered.filter(match) : ordered;
   const exact = people.some((p) => p.display_name.toLowerCase() === query);
   const inRec = filtered.filter((p) => memberIds.includes(p.id));
   const others = filtered.filter((p) => !memberIds.includes(p.id));
+  // The pinned "picked" strip: read off selectedIds, in the same stable order.
+  // Deliberately does NOT remove anyone from the list below — the list must never
+  // re-flow under a finger that is mid-tap (same reason settle rows stopped sorting).
+  const picked = ordered.filter((p) => selectedIds.has(p.id));
 
   function Group({ label, list }) {
     if (!list.length) return null;
@@ -77,7 +87,7 @@ export default function PeoplePicker({ people, selectedIds, multi = true, member
     setQ("");
   }
 
-  const mergeRows = people.filter(match);
+  const mergeRows = ordered.filter(match);
 
   return (
     <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "var(--scrim-sheet)", zIndex: 40, animation: "fadeIn 140ms ease" }}>
@@ -167,6 +177,25 @@ export default function PeoplePicker({ people, selectedIds, multi = true, member
                 })}
               </div>
             )}
+            {/* who's picked so far — pinned above the list, scrolls sideways, tap to remove */}
+            {multi && picked.length > 0 && (
+              <div style={{ flex: "none", marginTop: 14, paddingBottom: 12, borderBottom: "1px solid var(--hairline-3)" }}>
+                <div className="legend" style={{ marginBottom: 8 }}>Picked · {String(picked.length).padStart(2, "0")}</div>
+                <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 2 }}>
+                  {picked.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => onToggle(p)}
+                      style={{ display: "flex", alignItems: "center", gap: 5, flex: "none", background: "var(--bg)", border: "1px solid var(--hairline)", borderRadius: 999, padding: "3px 8px 3px 3px" }}
+                    >
+                      <span style={{ width: 20, height: 20, borderRadius: "50%", background: p.avatar_color || "var(--knob-off)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, flex: "none" }}>{p.avatar_emoji || "🙂"}</span>
+                      <span style={{ fontSize: 12, color: "var(--text-2)", whiteSpace: "nowrap" }}>{p.is_self ? "You" : p.display_name}</span>
+                      <span style={{ fontSize: 11, color: "var(--text-4)", lineHeight: 1 }}>✕</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <div style={{ overflowY: "auto", marginTop: 4 }}>
               {query && !exact && onCreate && (
                 <button onClick={() => onCreate(q.trim())} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "14px 4px", textAlign: "left" }}>
@@ -174,7 +203,7 @@ export default function PeoplePicker({ people, selectedIds, multi = true, member
                   <span style={{ fontSize: 15 }}>Create “{q.trim()}”</span>
                 </button>
               )}
-              <Group label="In this recording" list={inRec} />
+              <Group label={memberLabel} list={inRec} />
               <Group label={inRec.length ? "Everyone else" : "People"} list={others} />
             </div>
           </>
