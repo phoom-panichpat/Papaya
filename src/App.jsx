@@ -46,6 +46,20 @@ function AuthScreen() {
     setBusy(false);
   }
 
+  // dev-only: lets a local agent/tester see the real UI without a password.
+  // full_name is required — an anonymous user has no email, and
+  // handle_new_user's fallback (split_part(email, '@', 1)) would be null,
+  // which profiles.display_name (not null) rejects.
+  async function guestSignIn() {
+    setBusy(true);
+    setMsg("");
+    const { error } = await supabase.auth.signInAnonymously({
+      options: { data: { full_name: "Guest" } },
+    });
+    if (error) setMsg(error.message || "Guest sign-in failed. Enable Anonymous Sign-Ins in Supabase → Authentication → Sign In / Providers.");
+    setBusy(false);
+  }
+
   const field = {
     width: "100%",
     height: 46,
@@ -104,6 +118,16 @@ function AuthScreen() {
       >
         {mode === "signin" ? "No account? Create one" : "Have an account? Sign in"}
       </button>
+
+      {import.meta.env.DEV && (
+        <button
+          onClick={guestSignIn}
+          disabled={busy}
+          style={{ color: "var(--text-3)", fontSize: 12, padding: 8, border: "1px dashed var(--hairline)", borderRadius: 10 }}
+        >
+          {busy ? "…" : "Dev: continue as guest"}
+        </button>
+      )}
     </div>
   );
 }

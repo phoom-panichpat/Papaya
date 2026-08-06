@@ -47,14 +47,24 @@ function Cluster({ ids, people }) {
 
 // "another item for these same people" — quiet by design; the one accent on this
 // screen is Save.
+// "Another item for these same people." A duplicate glyph rather than words:
+// it sits inside a row that already has a label and an amount, and the old
+// "+ SAME PEOPLE" pill read louder than the "+ Add item" button below it.
 function ChainBtn({ onClick }) {
   return (
     <button
       onClick={onClick}
-      className="mono"
-      style={{ flex: "none", display: "flex", alignItems: "center", gap: 4, height: 26, padding: "0 9px", borderRadius: 999, border: "1px solid var(--hairline)", background: "var(--bg)", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)" }}
+      title="Another item, same people"
+      aria-label="Another item, same people"
+      style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--bg)", color: "var(--text-3)" }}
     >
-      <span style={{ fontSize: 13, lineHeight: 1 }}>+</span>same people
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        {/* back sheet, offset up-right — the "duplicate" read */}
+        <path d="M9 3h9a3 3 0 0 1 3 3v9" />
+        {/* front sheet with the + */}
+        <rect x="3" y="7" width="14" height="14" rx="3" />
+        <path d="M10 11.5v6M7 14.5h6" />
+      </svg>
     </button>
   );
 }
@@ -81,6 +91,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   const [homeCurrency, setHomeCurrency] = useState("THB");
   const [rate, setRate] = useState("");
   const [feePct, setFeePct] = useState(""); // service & VAT, as a % of the subtotal
+  const [confirmBack, setConfirmBack] = useState(false);
   const [sliced, setSliced] = useState(false);
   const [restMembers, setRestMembers] = useState(new Set());
   const [whosIn, setWhosIn] = useState(new Set());
@@ -252,6 +263,26 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   const needsRate = currency !== era;
   const rateNum = parseFloat(rate);
   const converted = needsRate && rateNum > 0 ? total * rateNum : null;
+
+  // ── unsaved-work guard ────────────────────────────────────────────────────
+  // Backing out of this screen throws away everything typed, and there is no
+  // draft to come back to — so it has to ask first. "Dirty" is measured against
+  // a snapshot taken once the form has finished loading, which is what makes it
+  // work in EDIT mode too (where every field starts pre-filled and a "did the
+  // user type anything" flag would always say yes).
+  const formSig = () => JSON.stringify({
+    amount, title, currency, rate, feePct, paidBy, sliced,
+    split: [...splitIds].sort(),
+    rest: [...restMembers].sort(),
+    who: [...whosIn].sort(),
+    items: items.map((i) => ({ l: i.label, a: i.amount, m: [...i.members].sort() })),
+  });
+  const cleanSig = useRef(null);
+  useEffect(() => {
+    if (!loading && cleanSig.current === null) cleanSig.current = formSig();
+  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+  const dirty = cleanSig.current !== null && formSig() !== cleanSig.current;
+  const goBack = () => (dirty ? setConfirmBack(true) : onClose(false));
 
   const carveTotal = items.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
   const restAmount = total - carveTotal;
@@ -469,7 +500,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
     <div style={{ position: "absolute", inset: 0, background: "var(--bg)", zIndex: 30, display: "flex", flexDirection: "column" }}>
       {/* header */}
       <div style={{ height: 54, flex: "none", display: "flex", alignItems: "center", padding: "0 12px", gap: 8 }}>
-        <button onClick={() => onClose(false)} style={{ width: 40, height: 40, fontSize: 20, borderRadius: "50%" }}>←</button>
+        <button onClick={goBack} style={{ width: 40, height: 40, fontSize: 20, borderRadius: "50%" }}>←</button>
         <div style={{ flex: 1, display: "flex", justifyContent: "center" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 7, height: 30, padding: "0 13px", background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: 999 }}>
             <span className="legend">{recording ? `Recording · ${recording.name}` : "No recording"}</span>
@@ -674,9 +705,13 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
             {/* checks out */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--hairline)" }}>
               <span style={{ fontSize: 13, fontWeight: 500, color: balanced ? "var(--text)" : danger }}>{balanced ? "✓ Checks out" : "Items exceed total"}</span>
+              {/* the CHARGED total, so this agrees with the per-person rows below
+                  and with what the expense reads as everywhere else. The balance
+                  check itself still runs on the subtotal (items must add up to
+                  it) — that's what the label asserts, not this figure. */}
               <span style={{ display: "flex", alignItems: "baseline", gap: 2 }}>
                 <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(currency)}</span>
-                <span className="money" style={{ fontSize: 15 }}>{total.toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>
+                <span className="money" style={{ fontSize: 15 }}>{charged.toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>
               </span>
             </div>
 
@@ -796,6 +831,24 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
           />
         );
       })()}
+
+      {/* leaving with unsaved work — nothing is drafted anywhere, so ask */}
+      {confirmBack && (
+        <div onClick={() => setConfirmBack(false)} style={{ position: "absolute", inset: 0, background: "var(--scrim)", display: "flex", alignItems: "center", justifyContent: "center", padding: 32, zIndex: 60, animation: "fadeIn 140ms ease" }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "var(--r-card)", padding: "22px 20px", width: "100%", animation: "popIn 160ms var(--ease)" }}>
+            <div className="legend" style={{ color: "var(--text-2)" }}>{editExpenseId ? "Discard changes?" : "Discard this expense?"}</div>
+            <div style={{ fontSize: 12.5, color: "var(--text-2)", lineHeight: 1.55, marginTop: 12 }}>
+              {editExpenseId
+                ? "Your edits haven’t been saved. Going back keeps the expense as it was."
+                : "Nothing has been saved yet. Going back throws away what you’ve entered."}
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <div onClick={() => setConfirmBack(false)} style={{ flex: 1, height: 40, border: "1px solid var(--hairline)", borderRadius: 20, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Keep editing</div>
+              <div onClick={() => onClose(false)} style={{ flex: 1, height: 40, background: "var(--danger)", color: "#fff", borderRadius: 20, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Discard</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* note */}
       {note && (

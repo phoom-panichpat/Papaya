@@ -225,9 +225,20 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
                       <span style={{ fontSize: 15, fontWeight: 600 }}>{it.is_rest ? "The rest" : (it.label || "Item")}</span>
                       {it.is_rest && <span className="legend" style={{ background: "var(--bg)", padding: "2px 6px", borderRadius: 6 }}>auto</span>}
                     </span>
-                    <span style={{ display: "flex", alignItems: "baseline", gap: 2 }}>
-                      <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(cur)}</span>
-                      <span className="money" style={{ fontSize: 15 }}>{formatMoney(itemAmount, cur)}</span>
+                    {/* fee-inclusive figure, with what it's made of stated beneath
+                        it — the fee is spread across items, so without the split
+                        out you can't tell why an item reads 824 when 700 was
+                        ordered. Only shown when there IS a fee. */}
+                    <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1 }}>
+                      <span style={{ display: "flex", alignItems: "baseline", gap: 2 }}>
+                        <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(cur)}</span>
+                        <span className="money" style={{ fontSize: 15 }}>{formatMoney(itemAmount, cur)}</span>
+                      </span>
+                      {serviceCharge(exp) > 0 && (
+                        <span className="mono" style={{ fontSize: 10, color: "var(--text-4)" }}>
+                          {formatMoney(Number(it.amount) || 0, cur)} + {formatMoney(itemAmount - (Number(it.amount) || 0), cur)}
+                        </span>
+                      )}
                     </span>
                   </div>
                   {/* collapsed: who + how many, one line. Tap for the names and the per-head. */}
