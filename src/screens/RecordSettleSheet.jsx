@@ -60,6 +60,20 @@ export default function RecordSettleSheet({ recordingId, people, onClose }) {
   // Direct pairwise over ALL of the record's shares (settled + unsettled), so a
   // paid pair stays visible (faded) and reversible. amount = net over all shares;
   // paid = every share in the pair is settled.
+  //
+  // 🔴 UNIT 5b MUST HANDLE THIS. Once a summary exists on this record, every
+  // share here is frozen and the only live debts are the summary's transfers,
+  // which arrive as synthetic contributions with `transferId` set and
+  // `settleKeys` EMPTY. Three consequences for the code below:
+  //   1. `paid` can never become true for a transfer-backed pair — a settled
+  //      transfer is filtered out upstream, so it never reaches this list.
+  //   2. `toggle`/`markAll` would settle zero rows: the exact stuck state that
+  //      killed minimized transfers in Phase 6. Settle the pair's `transferId`s
+  //      via settleTransfer/unsettleTransfer (in balances.js) as well as its
+  //      shares — collect them here the way directTransfers already does.
+  //   3. A settled transfer can't be patched optimistically like a share
+  //      (settling removes the atom entirely rather than flipping a flag), so
+  //      it needs its own row state or a re-load after the write.
   const transfers = (() => {
     const pairs = {};
     contribs.filter((c) => c.recordingId === recordingId).forEach((c) => {

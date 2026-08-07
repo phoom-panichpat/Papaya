@@ -160,7 +160,11 @@ export function buildContributions(data, homeCurrency) {
     const groups = {}; // resolvedId -> [member rows]
     rows.forEach((m) => { const r = rid(m.person_id); (groups[r] = groups[r] || []).push(m); });
     const distinct = Object.keys(groups);
-    const n = distinct.length; // divisor counts distinct people, not raw rows
+    // ⚠️ The divisor counts distinct people, not raw rows — and it is computed
+    // BEFORE any summary filtering. Closing one person's share must never
+    // enlarge what the others owe: the split happened at the table, and a
+    // consolidation afterwards is not a re-split.
+    const n = distinct.length;
     const native = nativeAmt / n;
     const base = baseAmt / n;
     const home = homeAmt / n;
@@ -168,6 +172,13 @@ export function buildContributions(data, homeCurrency) {
     distinct.forEach((pid) => {
       if (pid === payer) return; // the payer never owes their own share (post-resolution)
       const grp = groups[pid];
+      // CLOSED BY A SUMMARY — folded into a transfer, so it is no longer a debt
+      // of its own. Distinct from settled (nobody paid it; it was replaced), and
+      // the reason a summary is unambiguous: the share and the transfer that
+      // consolidated it can never both be live. Mirrors the `.every` convention
+      // used for `settled` just below; our own writes always close whole
+      // contributions, so a partly-closed group cannot arise from this app.
+      if (grp.every((m) => m.summary_id)) return;
       contribs.push({
         debtor: pid,
         creditor: payer,
@@ -185,7 +196,122 @@ export function buildContributions(data, homeCurrency) {
       });
     });
   });
-  return contribs;
+  return contribs.concat(buildTransferAtoms(data, homeCurrency));
+}
+
+// ── summaries ────────────────────────────────────────────────────────────
+// A SUMMARY is minimization as an ACTION, not a view. Invoked on a record, it
+// freezes every open share in scope (expense_item_members.summary_id) and
+// replaces them with a handful of transfers that carry their own settled_at.
+// You then settle the transfers instead.
+//
+// Why an action and not a toggle: a view recomputes whenever anything changes,
+// so you can never point at it and say "that's the plan we agreed" — and worse,
+// the underlying shares keep living independently, so "B paid A ฿100" and
+// "A owes B ฿200" end up both true with neither aware of the other. That
+// ambiguity is what made minimized transfers un-tappable in Phase 6. Freezing
+// removes it at the source, so no allocation rule is ever needed. In accounting
+// terms it is a closing entry: take everything open, net it, post the result,
+// mark the originals closed.
+//
+// THE ONE RULE, applied identically to shares and transfers:
+//     open debt = anything not settled AND not superseded.
+// Which is why a second summary sweeps up new expenses AND unpaid transfers
+// from the first with no special-casing — a transfer is just another thing a
+// later summary can close.
+
+// Live transfers as SYNTHETIC CONTRIBUTIONS. A transfer "X pays Y ฿N" is
+// arithmetically a debt of N from X to Y, so every net function (pairNet,
+// pairNetGrouped, netByPerson, directTransfers) works on it unchanged — they
+// only ever sum signed amounts over debtor/creditor pairs. buildContributions
+// appends these automatically, so no screen can forget to include them; screens
+// that must exclude them filter on the positive `transferId` marker.
+//
+// Person ids resolve through the alias map like everywhere else, so merging two
+// people after a summary re-routes its transfers too.
+export function buildTransferAtoms(data, homeCurrency) {
+  const aliasMap = buildAliasMap(data?.people || []);
+  const rid = (id) => resolveAlias(id, aliasMap);
+  return (data?.transfers || [])
+    .filter((t) => !t.settled_at && !t.superseded_by) // the one rule
+    .map((t) => {
+      const amount = Number(t.amount) || 0;
+      const homeAmt = Number(t.home_amount);
+      // home_amount is pinned at creation; fall back to the native amount only
+      // for a corrupt/absent pin, never to a live conversion (same stance as
+      // toHome takes on a bad rate pin).
+      const home = Number.isFinite(homeAmt) ? homeAmt : amount;
+      const cur = t.currency || t.home_currency || homeCurrency;
+      const debtor = rid(t.from_person);
+      return {
+        debtor,
+        creditor: rid(t.to_person),
+        // A transfer is already denominated in the record's settlement currency,
+        // so native = base = amount, with no conversion hop of any kind.
+        home, base: amount, native: amount,
+        currency: cur, baseCurrency: cur,
+        homeCurrency: t.home_currency || homeCurrency,
+        itemId: null,
+        personId: debtor,
+        settleKeys: [], // no item shares behind it — settle the transfer row itself
+        expenseId: null,
+        recordingId: t.recording_id || null,
+        settled: false,
+        settledAt: null,
+        transferId: t.id,   // the marker screens filter on
+        summaryId: t.summary_id,
+        expense: null,
+        item: null,
+      };
+    });
+}
+
+// Plan a summary over a scope WITHOUT writing anything — this is what the
+// preview-confirm renders. Returns the transfers to create, the share keys to
+// freeze, and the ids of any unpaid transfers this summary supersedes.
+//
+// `key` is the currency the plan is denominated in: "base" (the record's
+// settlement currency) for a record summary.
+//
+// ⚠️ THE HOME AMOUNT IS A DESIGN DECISION, NOT ARITHMETIC. Each expense pins
+// its own native→home rate, so netting several of them into two transfers has
+// no unique correct home split — it is a transportation problem, not a
+// division. We pin one BLENDED rate for the whole summary (its total home ÷ its
+// total base), which keeps the summary's aggregate home value identical to what
+// it replaced and degenerates to the record's own rate whenever every expense
+// in it shares a pin (the common case). Individual people's home figures can
+// shift by a hair; their amounts in the SETTLEMENT currency are exact.
+export function planSummary(contribs, scope, key = "base") {
+  const inScope = (contribs || []).filter((c) => !c.settled && (!scope || scope(c)));
+  const transfers = minimizeTransfers(netByPerson(inScope, null, key));
+  let sumKey = 0, sumHome = 0;
+  inScope.forEach((c) => { sumKey += c[key]; sumHome += c.home; });
+  const blended = sumKey > 0.005 ? sumHome / sumKey : 1;
+  const rate = Number.isFinite(blended) && blended > 0 ? blended : 1;
+  const first = inScope[0] || null;
+  return {
+    transfers: transfers.map((t) => ({ ...t, homeAmount: t.amount * rate })),
+    shareKeys: inScope.flatMap((c) => c.settleKeys || []),
+    // Unpaid transfers from an earlier summary that this one folds in. They are
+    // superseded rather than deleted, so the earlier summary stays readable.
+    transferIds: [...new Set(inScope.map((c) => c.transferId).filter(Boolean))],
+    currency: first ? (key === "base" ? first.baseCurrency : first.homeCurrency) : null,
+    // A record can only ever hold ONE era (eras are inherited from the
+    // container), so a single home currency for the whole plan is well-defined.
+    homeCurrency: first ? first.homeCurrency : null,
+    rate,
+    count: inScope.length,
+  };
+}
+
+// A summary can be reverted only while it is the LATEST (nothing has superseded
+// its transfers) and NONE of its transfers are settled. Settling even one locks
+// it — un-settle that transfer first. This is the guard, not a trap: you cannot
+// unwind Summary 1 while Summary 2 sits on top of it.
+export function canRevertSummary(transfers = [], summaryId) {
+  const mine = transfers.filter((t) => t.summary_id === summaryId);
+  if (!mine.length) return false; // also covers a summary that produced no transfers
+  return !mine.some((t) => t.superseded_by || t.settled_at);
 }
 
 // Optimistic local update: flip settled state on the contributions whose
@@ -287,17 +413,22 @@ export function directTransfers(contribs, scope, key = "base") {
     if (scope && !scope(c)) return;
     const a = c.debtor, b = c.creditor;
     const k = a < b ? `${a}|${b}` : `${b}|${a}`;
-    const p = (pairs[k] = pairs[k] || { sums: {}, shares: [] });
+    const p = (pairs[k] = pairs[k] || { sums: {}, shares: [], transferIds: [] });
     p.sums[`${a}>${b}`] = (p.sums[`${a}>${b}`] || 0) + c[key];
     p.shares.push(...(c.settleKeys || [{ itemId: c.itemId, personId: c.personId }]));
+    // A summary's transfer has no item shares behind it, so a row can be backed
+    // by shares, by transfers, or by both. Callers must settle BOTH lists or the
+    // row would look paid while half of it stayed open.
+    if (c.transferId) p.transferIds.push(c.transferId);
   });
   const out = [];
   Object.entries(pairs).forEach(([k, p]) => {
     const [x, y] = k.split("|");
     const net = (p.sums[`${x}>${y}`] || 0) - (p.sums[`${y}>${x}`] || 0);
     if (Math.abs(net) < 0.005) return; // they wash out even — no payment needed
-    out.push(net > 0 ? { from: x, to: y, amount: net, shares: p.shares }
-                     : { from: y, to: x, amount: -net, shares: p.shares });
+    const row = { amount: 0, shares: p.shares, transferIds: p.transferIds };
+    out.push(net > 0 ? { ...row, from: x, to: y, amount: net }
+                     : { ...row, from: y, to: x, amount: -net });
   });
   out.sort((a, b) => b.amount - a.amount);
   return out;

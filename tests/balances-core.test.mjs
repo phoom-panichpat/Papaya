@@ -12,6 +12,7 @@ import {
   buildAliasMap, resolveAlias, patchContribsSettled, eraFor,
   pairNetByEra, sumHomeByEra,
   serviceCharge, grandTotal, feeFactor,
+  buildTransferAtoms, planSummary, canRevertSummary,
 } from "../src/lib/balances-core.mjs";
 
 let pass = 0, fail = 0;
@@ -564,6 +565,279 @@ const taxiShare = (d) => buildContributions(d, HOME).find((c) => c.debtor === "y
   check("fee: home scales with the fee", approx(sofiaRec.home, 233.333 * 1.177 * 0.026, 0.001));
   check("fee: base (what an in-record settle charges) scales with the fee",
     approx(sofiaRec.base, 233.333 * 1.177));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SUMMARIES — minimization as an ACTION: freeze the shares, post the transfers
+// ═══════════════════════════════════════════════════════════════════════
+// The case that justifies the whole model (Phoom's own example): A owes B 200,
+// B owes C 300, C owes A 500. Nets are A +300, B −100, C −200, so the efficient
+// plan is "B pays A 100, C pays A 200" — but today's direct view shows
+// "A pays B 200", the OPPOSITE direction, so there is no share to tick for
+// "B pays A 100". And once the plan completes every net is zero while every
+// original share is still open: the plan discharges BALANCES, not items. No
+// allocation rule can close that gap; the shares have to stop being live.
+{
+  // A three-person cycle, all in home currency so base == native == home and
+  // the arithmetic is readable.
+  const cycleData = () => ({
+    people: [{ id: "a", is_self: true }, { id: "b" }, { id: "c" }],
+    recordings: [{ id: "r1", base_currency: "THB", exchange_rate: 1, home_currency: "THB" }],
+    expenses: [
+      { id: "x1", recording_id: "r1", currency: "THB", paid_by: "b", total_amount: 200, home_rate: 1, home_currency: "THB" },
+      { id: "x2", recording_id: "r1", currency: "THB", paid_by: "c", total_amount: 300, home_rate: 1, home_currency: "THB" },
+      { id: "x3", recording_id: "r1", currency: "THB", paid_by: "a", total_amount: 500, home_rate: 1, home_currency: "THB" },
+    ],
+    items: [
+      { id: "j1", expense_id: "x1", amount: 200 },
+      { id: "j2", expense_id: "x2", amount: 300 },
+      { id: "j3", expense_id: "x3", amount: 500 },
+    ],
+    members: [
+      { item_id: "j1", person_id: "a" },   // A owes B 200
+      { item_id: "j2", person_id: "b" },   // B owes C 300
+      { item_id: "j3", person_id: "c" },   // C owes A 500
+    ],
+    transfers: [],
+  });
+
+  // Simulate exactly what createSummary writes: freeze the planned shares,
+  // supersede the transfers it swept up, insert its own transfers.
+  const applySummary = (data, plan, summaryId, recordingId) => {
+    const frozen = new Set((plan.shareKeys || []).map((k) => `${k.itemId}:${k.personId}`));
+    return {
+      ...data,
+      members: data.members.map((m) =>
+        frozen.has(`${m.item_id}:${m.person_id}`) ? { ...m, summary_id: summaryId } : m),
+      transfers: [
+        ...(data.transfers || []).map((t) =>
+          plan.transferIds.includes(t.id) ? { ...t, superseded_by: summaryId } : t),
+        ...plan.transfers.map((t, i) => ({
+          id: `${summaryId}#${i}`, summary_id: summaryId, recording_id: recordingId,
+          from_person: t.from, to_person: t.to,
+          amount: t.amount, currency: plan.currency,
+          home_amount: t.homeAmount, home_currency: plan.homeCurrency,
+          settled_at: null, superseded_by: null,
+        })),
+      ],
+    };
+  };
+  const inR1 = (c) => c.recordingId === "r1";
+  const netsOf = (data, key = "base") =>
+    netByPerson(buildContributions(data, HOME), inR1, key);
+
+  const d0 = cycleData();
+  const c0 = buildContributions(d0, HOME);
+  const plan = planSummary(c0, inR1, "base");
+
+  check("summary: the cycle plans to exactly 2 transfers", plan.transfers.length === 2);
+  check("summary: both transfers are TO A (the only net creditor)",
+    plan.transfers.every((t) => t.to === "a"));
+  check("summary: C pays A 200", plan.transfers.some((t) => t.from === "c" && approx(t.amount, 200)));
+  check("summary: B pays A 100", plan.transfers.some((t) => t.from === "b" && approx(t.amount, 100)));
+  check("summary: it closes all 3 shares", plan.shareKeys.length === 3);
+
+  const d1 = applySummary(d0, plan, "s1", "r1");
+  const c1 = buildContributions(d1, HOME);
+
+  // ── THE guarantee minimization exists to keep ──
+  const n0 = netsOf(d0), n1 = netsOf(d1);
+  ["a", "b", "c"].forEach((p) =>
+    check(`summary: ${p}'s net is unchanged across the summary`, approx(n0[p] || 0, n1[p] || 0)));
+
+  // ── the shares are CLOSED, not settled — a distinct third state ──
+  check("summary: closed shares produce no contributions", c1.every((c) => !c.itemId));
+  check("summary: the live debts are now the 2 transfers", c1.length === 2);
+  check("summary: a transfer atom is marked, so screens can tell them apart",
+    c1.every((c) => c.transferId && c.settleKeys.length === 0));
+  check("summary: nothing was marked settled by the summary",
+    d1.members.every((m) => !m.settled_at) && c1.every((c) => !c.settled));
+
+  // ── gross shrinks inside the record: you end up purely creditor or debtor ──
+  const gross = (cs) => cs.reduce((s, c) => s + c.base, 0);
+  check("summary: gross owed within the record can only shrink",
+    gross(c1.filter(inR1)) <= gross(c0.filter(inR1)) + 0.005);
+  check("summary: A is now purely a creditor (appears in no debt as debtor)",
+    !c1.some((c) => c.debtor === "a"));
+
+  // ── settling a transfer clears it, exactly like a share ──
+  const dPaid = { ...d1, transfers: d1.transfers.map((t) =>
+    t.from_person === "c" ? { ...t, settled_at: "2026-08-07T00:00:00Z" } : t) };
+  const cPaid = buildContributions(dPaid, HOME);
+  check("summary: a settled transfer leaves the open set", cPaid.length === 1);
+  check("summary: …and A is owed 100 less", approx(pairNet(cPaid, "a", "b"), 100));
+
+  // ── a superseded transfer is also out: OPEN = not settled AND not superseded ──
+  const dSup = { ...d1, transfers: d1.transfers.map((t) => ({ ...t, superseded_by: "s2" })) };
+  check("summary: superseded transfers are excluded",
+    buildContributions(dSup, HOME).length === 0);
+
+  // ── revert restores EXACTLY the pre-summary picture ──
+  const dRev = { ...d1, members: d1.members.map(({ summary_id, ...m }) => m), transfers: [] };
+  const cRev = buildContributions(dRev, HOME);
+  check("summary: revert restores the same number of debts", cRev.length === c0.length);
+  check("summary: revert restores every debt exactly", cRev.every((r) =>
+    c0.some((o) => o.debtor === r.debtor && o.creditor === r.creditor && approx(o.base, r.base))));
+
+  // ── repeatability: summary #2 sweeps new shares AND unpaid transfers from #1 ──
+  // THE ONE RULE — open debt = not settled and not superseded — applies
+  // identically to a share and to a transfer, so this needs no special-casing.
+  const d2 = (() => {
+    const d = { ...d1, expenses: [...d1.expenses, {
+      id: "x4", recording_id: "r1", currency: "THB", paid_by: "b",
+      total_amount: 60, home_rate: 1, home_currency: "THB",
+    }],
+      items: [...d1.items, { id: "j4", expense_id: "x4", amount: 60 }],
+      members: [...d1.members, { item_id: "j4", person_id: "a" }] }; // A owes B 60 more
+    return d;
+  })();
+  const plan2 = planSummary(buildContributions(d2, HOME), inR1, "base");
+  check("summary #2: sweeps up the unpaid transfers from #1", plan2.transferIds.length === 2);
+  check("summary #2: sweeps up the new share too", plan2.shareKeys.length === 1);
+  const d3 = applySummary(d2, plan2, "s2", "r1");
+  const c3 = buildContributions(d3, HOME);
+  check("summary #2: the earlier transfers are gone from the open set",
+    !c3.some((c) => c.transferId?.startsWith("s1")));
+  const n2 = netsOf(d2), n3 = netsOf(d3);
+  ["a", "b", "c"].forEach((p) =>
+    check(`summary #2: ${p}'s net still unchanged`, approx(n2[p] || 0, n3[p] || 0)));
+
+  // ── freezing must never re-split what's left ──
+  // Close ONE person's share of a 3-way item; the other two still owe a third
+  // each, not a half. The split happened at the table — a consolidation
+  // afterwards is not a re-split.
+  {
+    const d = {
+      people: [{ id: "you", is_self: true }, { id: "rui" }, { id: "sofia" }],
+      recordings: [],
+      expenses: [{ id: "p1", recording_id: null, currency: "THB", paid_by: "you", total_amount: 900, home_rate: 1, home_currency: "THB" }],
+      items: [{ id: "q1", expense_id: "p1", amount: 900 }],
+      members: [
+        { item_id: "q1", person_id: "you" },
+        { item_id: "q1", person_id: "rui", summary_id: "sX" },
+        { item_id: "q1", person_id: "sofia" },
+      ],
+      transfers: [],
+    };
+    const cs = buildContributions(d, HOME);
+    check("summary: closing one share does not enlarge the others",
+      cs.length === 1 && approx(cs[0].native, 300));
+  }
+
+  // ── canRevertSummary: latest and untouched only ──
+  const xs = [
+    { id: "t1", summary_id: "s1", settled_at: null, superseded_by: null },
+    { id: "t2", summary_id: "s1", settled_at: null, superseded_by: null },
+  ];
+  check("revert: allowed while nothing is settled or superseded", canRevertSummary(xs, "s1"));
+  check("revert: blocked once ONE transfer is settled",
+    !canRevertSummary([{ ...xs[0], settled_at: "now" }, xs[1]], "s1"));
+  check("revert: blocked once a later summary sits on top",
+    !canRevertSummary([{ ...xs[0], superseded_by: "s2" }, xs[1]], "s1"));
+  check("revert: unknown summary is not revertable", !canRevertSummary(xs, "s9"));
+
+  // ── single-payer record: minimized and direct are already the same ──
+  // Worth asserting because it's the case where a summary does nothing useful,
+  // and the confirm sheet should say so rather than look broken.
+  {
+    const d = {
+      people: [{ id: "you", is_self: true }, { id: "rui" }, { id: "sofia" }],
+      recordings: [{ id: "r2", base_currency: "THB", exchange_rate: 1, home_currency: "THB" }],
+      expenses: [{ id: "y1", recording_id: "r2", currency: "THB", paid_by: "you", total_amount: 900, home_rate: 1, home_currency: "THB" }],
+      items: [{ id: "k1", expense_id: "y1", amount: 900 }],
+      members: [{ item_id: "k1", person_id: "you" }, { item_id: "k1", person_id: "rui" }, { item_id: "k1", person_id: "sofia" }],
+      transfers: [],
+    };
+    const cs = buildContributions(d, HOME);
+    const inR2 = (c) => c.recordingId === "r2";
+    const p = planSummary(cs, inR2, "base");
+    const direct = directTransfers(cs, inR2, "base");
+    check("summary: a single-payer record plans the same transfers as the direct view",
+      p.transfers.length === direct.length &&
+      p.transfers.every((t) => direct.some((d2) =>
+        d2.from === t.from && d2.to === t.to && approx(d2.amount, t.amount))));
+  }
+
+  // ── the home wrinkle: one blended rate, era-consistent ──
+  // Every expense pins its OWN native→home rate, so netting several into two
+  // transfers has no unique correct home split. The plan pins ONE blended rate
+  // (its total home ÷ its total base) — which keeps the summary's aggregate home
+  // value identical to what it replaced, and degenerates to the record's own
+  // rate whenever every expense in it shares a pin.
+  {
+    const krw = {
+      people: [{ id: "you", is_self: true }, { id: "rui" }, { id: "sofia" }],
+      recordings: [{ id: "r3", base_currency: "KRW", exchange_rate: 0.026, home_currency: "THB" }],
+      expenses: [
+        { id: "z1", recording_id: "r3", currency: "KRW", paid_by: "you", total_amount: 90000, home_rate: 0.026, home_currency: "THB" },
+        { id: "z2", recording_id: "r3", currency: "KRW", paid_by: "rui", total_amount: 30000, home_rate: 0.026, home_currency: "THB" },
+      ],
+      items: [{ id: "m1", expense_id: "z1", amount: 90000 }, { id: "m2", expense_id: "z2", amount: 30000 }],
+      members: [
+        { item_id: "m1", person_id: "you" }, { item_id: "m1", person_id: "rui" }, { item_id: "m1", person_id: "sofia" },
+        { item_id: "m2", person_id: "you" }, { item_id: "m2", person_id: "rui" }, { item_id: "m2", person_id: "sofia" },
+      ],
+      transfers: [],
+    };
+    const inR3 = (c) => c.recordingId === "r3";
+    const cs = buildContributions(krw, HOME);
+    const p = planSummary(cs, inR3, "base");
+    check("summary: a uniform pin blends to exactly the record's own rate", approx(p.rate, 0.026, 1e-9));
+    check("summary: the plan carries the record's settlement currency", p.currency === "KRW");
+    check("summary: the plan carries the record's ERA, not today's home", p.homeCurrency === "THB");
+    const after = buildContributions(applySummary(krw, p, "s1", "r3"), HOME);
+    const homeGross = (xs2) => xs2.reduce((s, c) => s + c.home, 0);
+    const owedHome = (xs2) => {
+      const n = netByPerson(xs2, inR3, "home");
+      return Object.values(n).filter((v) => v > 0).reduce((s, v) => s + v, 0);
+    };
+    check("summary: the record's total owed in HOME is identical after the summary",
+      approx(owedHome(cs), owedHome(after), 0.01));
+    check("summary: transfers stay pinned in the record's era",
+      after.every((c) => c.homeCurrency === "THB"));
+    check("summary: a transfer's home amount is PINNED, not re-derived",
+      approx(homeGross(after), homeGross(after.map((c) => c)), 1e-9) &&
+      after.every((c) => approx(c.home, c.base * 0.026, 0.01)));
+  }
+
+  // ── documented, accepted: GLOBALLY gross can occasionally GROW ──
+  // Summarising one record can break a cancellation you had with someone across
+  // two records. Net is still preserved for everyone — that is the guarantee —
+  // but the number of live debts can go up. Phoom was told; this test records
+  // the chosen behaviour rather than pretending it cannot happen.
+  {
+    const d = {
+      people: [{ id: "you", is_self: true }, { id: "rui" }, { id: "sofia" }],
+      recordings: [{ id: "kr", base_currency: "THB", exchange_rate: 1, home_currency: "THB" }],
+      expenses: [
+        // in the record: You owe Rui 50, Sofia owes You 50
+        { id: "g1", recording_id: "kr", currency: "THB", paid_by: "rui", total_amount: 50, home_rate: 1, home_currency: "THB" },
+        { id: "g2", recording_id: "kr", currency: "THB", paid_by: "you", total_amount: 50, home_rate: 1, home_currency: "THB" },
+        // loose, outside the record: Rui owes You 50 — cancels g1 today
+        { id: "g3", recording_id: null, currency: "THB", paid_by: "you", total_amount: 50, home_rate: 1, home_currency: "THB" },
+      ],
+      items: [
+        { id: "h1", expense_id: "g1", amount: 50 }, { id: "h2", expense_id: "g2", amount: 50 },
+        { id: "h3", expense_id: "g3", amount: 50 },
+      ],
+      members: [
+        { item_id: "h1", person_id: "you" }, { item_id: "h2", person_id: "sofia" },
+        { item_id: "h3", person_id: "rui" },
+      ],
+      transfers: [],
+    };
+    const inKr = (c) => c.recordingId === "kr";
+    const before = buildContributions(d, HOME);
+    check("global: You and Rui cancel to zero before the summary",
+      approx(pairNet(before, "you", "rui"), 0));
+    const p = planSummary(before, inKr, "base");
+    const after = buildContributions(applySummary(d, p, "s1", "kr"), HOME);
+    const gnet = (cs, id) => netByPerson(cs, null, "home")[id] || 0;
+    ["you", "rui", "sofia"].forEach((id) =>
+      check(`global: ${id}'s overall net is preserved`, approx(gnet(before, id), gnet(after, id))));
+    check("global: …but the You↔Rui cancellation is broken (accepted)",
+      approx(pairNet(after, "you", "rui"), 50));
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────

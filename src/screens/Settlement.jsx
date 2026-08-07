@@ -433,8 +433,15 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
   );
   const [ticked, setTicked] = useState(() => new Set());
 
-  function keyOf(c) { return `${c.itemId}:${c.personId}`; }
+  function keyOf(c) { return c.transferId ? `t:${c.transferId}` : `${c.itemId}:${c.personId}`; }
+  // A summary's transfer has no item shares behind it, so there is nothing here
+  // to tick — ticking it would settle zero rows and leave the row stuck on
+  // "paid" while the debt stayed open (the Phase-6 bug). It still LISTS, so this
+  // sheet keeps adding up to the person card, but it is settled in the record
+  // where its summary lives.
+  const tickable = shares.filter((c) => !c.transferId);
   function toggle(c) {
+    if (c.transferId) return;
     setTicked((s) => { const n = new Set(s); const k = keyOf(c); n.has(k) ? n.delete(k) : n.add(k); return n; });
   }
 
@@ -475,10 +482,10 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "12px 0 4px" }}>
               <span className="legend">Check what’s paid</span>
               <button
-                onClick={() => setTicked((s) => s.size === shares.length ? new Set() : new Set(shares.map(keyOf)))}
+                onClick={() => setTicked((s) => s.size === tickable.length ? new Set() : new Set(tickable.map(keyOf)))}
                 className="mono" style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)" }}
               >
-                {ticked.size === shares.length ? "Clear" : "Check all"}
+                {ticked.size === tickable.length && tickable.length > 0 ? "Clear" : "Check all"}
               </button>
             </div>
 
@@ -487,13 +494,16 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
                 const k = keyOf(c);
                 const on = ticked.has(k);
                 const theyOwe = c.creditor === self.id;
+                const isTransfer = !!c.transferId;
                 return (
-                  <button key={k} onClick={() => toggle(c)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, padding: "12px 2px", borderBottom: "1px solid var(--hairline-3)", textAlign: "left" }}>
-                    <span style={{ width: 22, height: 22, borderRadius: 7, border: on ? "none" : "1.5px solid var(--hairline)", background: on ? "var(--settled)" : "var(--bg)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flex: "none" }}>{on ? "✓" : ""}</span>
+                  <button key={k} onClick={() => toggle(c)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, padding: "12px 2px", borderBottom: "1px solid var(--hairline-3)", textAlign: "left", opacity: isTransfer ? 0.75 : 1 }}>
+                    <span style={{ width: 22, height: 22, borderRadius: 7, border: on ? "none" : "1.5px solid var(--hairline)", background: on ? "var(--settled)" : "var(--bg)", color: isTransfer ? "var(--text-4)" : "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flex: "none" }}>{isTransfer ? "–" : (on ? "✓" : "")}</span>
                     <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-                      <span style={{ fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.expense.title}</span>
+                      <span style={{ fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isTransfer ? "Summary transfer" : c.expense?.title}</span>
                       <span className="mono" style={{ fontSize: 9.5, letterSpacing: "0.06em", textTransform: "uppercase", color: theyOwe ? "var(--settled)" : "var(--open)" }}>
-                        {c.item.is_rest ? "the rest" : (c.item.label || "item")} · {theyOwe ? "owes you" : "you owe"}
+                        {isTransfer
+                          ? `settle in the record · ${theyOwe ? "owes you" : "you owe"}`
+                          : `${c.item?.is_rest ? "the rest" : (c.item?.label || "item")} · ${theyOwe ? "owes you" : "you owe"}`}
                       </span>
                     </span>
                     {/* home-per-era primary, so these rows visibly add up to the
@@ -604,9 +614,11 @@ function EventSheet({ event, self, home, nameOf, onClose, onUnsettle }) {
               <button key={k} onClick={() => toggle(c)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, padding: "12px 2px", borderBottom: "1px solid var(--hairline-3)", textAlign: "left" }}>
                 <span style={{ width: 22, height: 22, borderRadius: 7, border: on ? "none" : "1.5px solid var(--hairline)", background: on ? "var(--danger)" : "var(--bg)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flex: "none" }}>{on ? "✓" : ""}</span>
                 <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-                  <span style={{ fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.expense.title}</span>
+                  {/* transfer atoms are never `settled`, so they can't reach a
+                      settled event — the optional chaining is belt-and-braces. */}
+                  <span style={{ fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.expense?.title}</span>
                   <span className="mono" style={{ fontSize: 9.5, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-3)" }}>
-                    {c.item.is_rest ? "the rest" : (c.item.label || "item")}
+                    {c.item?.is_rest ? "the rest" : (c.item?.label || "item")}
                   </span>
                 </span>
                 <Money n={c.home} cur={c.homeCurrency} color="var(--text-3)" style={{ fontSize: 14, flex: "none" }} />

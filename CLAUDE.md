@@ -111,7 +111,7 @@ Commits on `papaya-v2`: `8725d11` (foundation/Home/expense form), `c2a23f2` (cle
 npm install
 npm run dev      # Vite dev server, http://localhost:5173
 npm run build    # production build (use to verify compile after changes)
-npm test         # money-core guardrail tests (tests/balances-core.test.mjs) — must stay 73/73
+npm test         # money-core guardrail tests (tests/balances-core.test.mjs) — must stay 136/136
 ```
 
 - Env: `.env` holds `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` (gitignored; template in `.env.example`). The Supabase project is fresh and the v2 schema is applied.
@@ -137,7 +137,7 @@ src/
     balances-core.mjs  # PURE money math (no Supabase; node-testable): buildContributions,
                        #   pairNet, netByPerson, directTransfers, minimizeTransfers, statusForExpense, toHome
     balances.js        # re-exports the core + IO: loadSettlementData, settleShares/unsettleShares
-                       #   (recordPayment/deletePayment retained but UNUSED — ledger writes were dropped)
+                       #   + summaries: createSummary/revertSummary/settleTransfer/loadSummaries
   screens/
     Home.jsx           # merged feed (recordings + loose + recording bar + search + new-recording + FAB)
     ExpenseForm.jsx    # expense capture (even-split + "split it up" carve-outs; editExpenseId edit mode)
@@ -155,7 +155,7 @@ src/
                        #   names the primary group ("In this recording" / "In this expense")
     SaveError.jsx      # transient "couldn't save — showing latest saved state" notice (optimistic-UI failure path)
 tests/
-  balances-core.test.mjs # money-core guardrail suite (plain Node; `npm test`, 73/73)
+  balances-core.test.mjs # money-core guardrail suite (plain Node; `npm test`, 136/136)
 schema.sql             # v2 Postgres schema (apply to a clean DB)
 design/                # TOKENS.md (design spec) + reference .dc.html mockups
 CLAUDE.md              # this file
@@ -173,9 +173,9 @@ Single-user model — **every table has `owner_id` and RLS is a plain `owner_id 
 - `recordings` (`base_currency`, `exchange_rate`, **`home_currency`** = the home currency this record was created under, its **era**, fixed at creation and inherited by every expense in it; `is_active`, **`archived_at`** null=active/on-Home, set=archived/in-History) + `recording_members`
 - `expenses` (`recording_id` null = loose; `paid_by` → people; `currency`, `exchange_rate` = expense→record-base, now only a pre-fill/edit default, **`home_rate`** = this expense's OWN native→home rate **pinned at creation — the single thing every balance converts through**, so a record's currency can never retroactively rewrite a debt; **`home_currency`** = the currency `home_rate` converts INTO, i.e. this expense's **era** — so a later home-currency change can't mislabel an old pin; `archived_at`)
 - `expense_items` (`is_rest` catch-all + carve-outs; `amount`, `label`) + `expense_item_members` (`settled_at` = **the single source of truth for outstanding** — set = paid)
-- `settlements` (payment ledger — **now unused**: settle flows write `settled_at` only; kept for possible future audit)
+- `settlement_events` (**append-only log**; a summary IS an event, so a revert appends `summary_reverted` rather than erasing. Nothing here affects a balance) + `summary_transfers` (the live obligations a summary creates: `settled_at` + `superseded_by`; **`home_amount` is pinned, not derived**) + **`expense_item_members.summary_id`** (the freeze: set = closed by a summary, a third state distinct from settled). The old `settlements` ledger is **dropped**.
 
-Balances are **derived client-side** from items + members' `settled_at` (no balance column; the `settlements` ledger is NOT subtracted), and every `person_id` is **resolved through `merged_into_id`** in `buildContributions` before netting (so a merge/un-merge instantly re-routes all past splits). Composite-key tables (`expense_item_members`, `recording_members`) have no `id` column. **All migrations are applied to the live DB** (`recordings.archived_at`, `expenses.archived_at`, `people.merged_into_id`, `expenses.home_rate` + its backfill) and are reflected in `schema.sql` for clean applies.
+Balances are **derived client-side** from items + members' `settled_at` **plus any live `summary_transfers`** — a debt is OPEN while it is neither settled nor superseded, the same rule for a share and for a transfer (no balance column), and every `person_id` is **resolved through `merged_into_id`** in `buildContributions` before netting (so a merge/un-merge instantly re-routes all past splits). Composite-key tables (`expense_item_members`, `recording_members`) have no `id` column. **All migrations are applied to the live DB** (`recordings.archived_at`, `expenses.archived_at`, `people.merged_into_id`, `expenses.home_rate` + its backfill) and are reflected in `schema.sql` for clean applies.
 
 ---
 
@@ -507,7 +507,7 @@ Small polish noticed, non-blocking: (a) `ExpenseForm` edit mode's "logged · [ts
    #### Sub-units — four, and do NOT collapse them
    | | | |
    |---|---|---|
-   | **5a** | data model + money core + `planSummary` | 🔴🔴 Claude Code (Evie/Opus), **fresh session**, tests-first |
+   | **5a** | data model + money core + `planSummary` | ✅ **BUILT 2026-08-07** (Claude Code/Opus 5) — see below |
    | **5b** | the summary flow in the record: preview-confirm, transfers list, revert | 🟠 GLM 5.2 |
    | **5c** | the **"closed"** treatment across four screens | 🟠 GLM 5.2 |
    | **5d** | audit surfaces in Settlement → History | 🟠 GLM 5.2 |
@@ -520,7 +520,23 @@ Small polish noticed, non-blocking: (a) `ExpenseForm` edit mode's "logged · [ts
    - **Transfers settle all-or-nothing** — "B owes ฿100, paid ฿60" is not representable, same as today's rows. Partial payment would want a real payment ledger underneath, which this model avoids needing.
    - **Summarising a single-payer record does nothing useful** — minimized and direct are already identical there. Put a quiet line in the confirm so it doesn't look broken.
 
-   #### 5a test list (on top of the 94, which must stay green UNTOUCHED — no summary rows ⇒ byte-identical balances, and that IS the migration-safety proof)
-   Phoom's 3-way cycle (A owes B 200, B owes C 300, C owes A 500) plans to exactly 2 transfers and nets everyone to zero; **net preserved per person** across a summary; within-record gross non-increasing; the cross-record gross-growth case documented; closed shares excluded; a settled transfer excluded; a superseded transfer excluded; **summary #2 sweeps new shares + unsettled transfers from #1** (the repeatability rule); revert restores exactly the pre-summary contributions; **home total identical before/after**; single-payer record ⇒ plan equals the direct view.
+   #### ✅ 5a — BUILT 2026-08-07 (Claude Code/Opus 5). `npm test` **136/136**, the original 94 green and untouched; build clean. ⚠️ **MIGRATION NOT YET RUN LIVE** — the paste block was handed to Phoom.
+   Safe to deploy before the SQL runs: no summary rows exist ⇒ no share is frozen ⇒ every balance is byte-identical, and **the original 94 staying green IS that proof**.
+
+   **Schema (`schema.sql`, + a migration paste block).** `settlement_events` (append-only log: `kind` ∈ summary | summary_reverted | settle_shares | unsettle_shares, `recording_id`, `ref_event_id`, `shares` jsonb, `note`; ⚠️ **nothing in it affects a balance — it is a log, keep it a log**) · `summary_transfers` (the live obligations: `summary_id`, denormalized `recording_id`, from/to, `amount`+`currency`, **pinned** `home_amount`+`home_currency`, `settled_at`, `superseded_by`) · **`expense_item_members.summary_id`** = the whole freeze mechanism. Old `settlements` table dropped along with the dead `recordPayment`/`deletePayment`. RLS is the same plain `owner_id = auth.uid()` check everywhere. Note: `settlement_events` is declared **before** `expense_item_members` in `schema.sql` because that table now points at it.
+
+   **Money core (`balances-core.mjs`).** `buildContributions` skips a share whose group is fully `summary_id`-stamped — a third state, distinct from settled (nobody paid it; it was replaced). **🔑 The divisor is computed BEFORE that filter**, so closing one person's share can never enlarge what the others owe (asserted). New `buildTransferAtoms` turns unsettled, non-superseded transfers into **synthetic contributions** (`transferId` marker, `settleKeys: []`, alias-resolved), appended automatically by `buildContributions` — so `pairNet`, `pairNetGrouped`, `netByPerson`, `directTransfers` all work **unchanged**, and no screen can forget to include them. New `planSummary(contribs, scope, key)` → `{ transfers (each with `homeAmount`), shareKeys, transferIds, currency, homeCurrency, rate, count }`, writing nothing — it is what the preview-confirm renders. New `canRevertSummary(transfers, summaryId)`. `directTransfers` now also returns `transferIds` per row.
+
+   **⚠️ ONE SPEC DEVIATION, deliberate — the home rate is BLENDED, not the record's `exchange_rate`.** The spec named the record's rate but also demanded "the record's home total must be identical before and after". Those conflict the moment two expenses in a record carry different pins: converting at the record's rate shifts the aggregate. `planSummary` therefore pins **one blended rate = the summary's total home ÷ its total base**, which keeps the aggregate exact, is still one explainable number, and **degenerates to exactly the record's own rate whenever every expense in it shares a pin** (the common case — asserted). Per-person home figures can still shift by a hair; their amounts in the settlement currency are exact.
+
+   **IO (`balances.js`).** `loadSettlementData` supplies `transfers` in **both** paths (the scoped one filters on `summary_transfers.recording_id`, which is why that column is denormalized). New `createSummary` / `revertSummary` / `settleTransfer` / `unsettleTransfer` / `loadSummaries` — the money-critical writes live here so 5b is pure UI. **🔑 The write ORDER is the safety property:** create the replacement first, freeze the originals **last**, so a partial failure leaves both live (a visible double-count you can revert) rather than shares frozen with nothing replacing them (money silently gone). `revertSummary` mirrors it in reverse — unfreeze first. Fail loud, never quiet. If that ever proves insufficient the upgrade is a Postgres RPC, the same answer C2 needed.
+
+   **Two consumer fixes made in 5a (found by grepping every contrib deref, not by guessing).** `Settlement.jsx`'s person sheet dereferenced `c.expense.title` / `c.item.is_rest` — a hard **crash** on a transfer atom. Transfer rows now render read-only ("Summary transfer · settle in the record"), are excluded from ticking (`tickable`), and keep a stable key — so the sheet still **adds up to the person card** but can't produce a tick that settles zero rows. EventSheet got matching `?.` (transfer atoms are never settled, so belt-and-braces).
+
+   **🔴 FLAGGED IN-CODE FOR 5b — `RecordSettleSheet.jsx:63`.** Its local pair math has `paid = p.settled === p.total` and pushes only `settleKeys`. Once a summary exists, every share there is frozen and the only live debts are transfer atoms with EMPTY settleKeys, so `toggle`/`markAll` would settle nothing — the exact Phase-6 stuck state. A precise three-point comment sits above the code saying what to do (settle the pair's `transferId`s via `settleTransfer`/`unsettleTransfer` too; a settled transfer leaves the contribution set rather than flipping a flag, so it needs its own row state or a re-load). **Deliberately not fixed here** — it is 5b's design, not a latent bug today.
+
+   **Deliberately NOT built (5d's job):** `settleShares`/`unsettleShares` do **not** yet append `settle_shares`/`unsettle_shares` events. The kinds are defined and the table is ready, but wiring it needs `ownerId` threaded through every settle caller — cross-cutting churn that belongs with the unit that reads the log.
+
+   **Tests (+42, all in one "SUMMARIES" block).** Phoom's 3-way cycle → exactly 2 transfers, both to A, C pays 200 / B pays 100; **every person's net unchanged across the summary** (the guarantee); closed shares produce no contributions and nothing is marked settled; within-record gross can only shrink and A becomes purely a creditor; a settled transfer and a superseded transfer both leave the open set; revert restores every debt exactly; **summary #2 sweeps the new share AND #1's two unpaid transfers** with nets still preserved; closing one share doesn't re-split the rest; all four `canRevertSummary` rules; single-payer record ⇒ plan == direct view; the KRW record blends to exactly 0.026 and its **total owed in home is identical after the summary**, transfers stay in the record's era; and the accepted **global gross-growth** case (summarising a record breaks a cross-record You↔Rui cancellation — every net preserved, documented rather than hidden).
 
 6. **Notes, bank details, payment evidence** (his 2.6/2.7/2.8). **Needs Supabase Storage — not wired at all yet.** **Critique: attach bank details/QR to the PERSON (People tab), not the expense** — otherwise you re-enter Rui's QR on every expense he pays. 2.8 builds directly on unit 4's ledger.

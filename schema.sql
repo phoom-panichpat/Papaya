@@ -108,6 +108,32 @@ create table expense_items (
   created_at  timestamptz default now()
 );
 
+-- ── settlement_events (append-only log) ─────────────────────────────────
+-- Every settlement-shaped ACTION is appended here and never edited or deleted.
+-- A summary IS an event, so "undo" appends `summary_reverted` rather than
+-- erasing — which is what makes an audit trail possible at all. (Un-settling a
+-- share used to erase the settle with no trace; that was the July 2026
+-- complaint this table finally answers.)
+--
+--   kind = 'summary'          — a record's open debts were consolidated
+--          'summary_reverted' — that consolidation was undone (ref_event_id)
+--          'settle_shares'    — shares marked paid      (not written yet — 5d)
+--          'unsettle_shares'  — shares reopened         (not written yet — 5d)
+--
+-- ⚠️ Nothing in this table affects a balance. Balances come from open shares
+-- and live summary_transfers only. This is a log; keep it a log.
+-- (Declared before expense_item_members because that table points at it.)
+create table settlement_events (
+  id            uuid primary key default gen_random_uuid(),
+  owner_id      uuid not null references profiles(id) on delete cascade,
+  kind          text not null,
+  recording_id  uuid references recordings(id) on delete set null,
+  ref_event_id  uuid references settlement_events(id),  -- e.g. the summary a revert undoes
+  shares        jsonb,   -- [{itemId, personId}] the shares this event covered
+  note          text,
+  created_at    timestamptz default now()
+);
+
 -- who's in each item (+ per-person settled status).
 -- settled_at null = still open; set = that person's share of this item is paid.
 create table expense_item_members (
@@ -115,21 +141,45 @@ create table expense_item_members (
   person_id  uuid not null references people(id) on delete cascade,
   owner_id   uuid not null references profiles(id) on delete cascade,
   settled_at timestamptz,
+  -- CLOSED BY A SUMMARY. Set = this share was folded into a summary's transfers
+  -- and no longer counts as a debt on its own. This is a THIRD state, distinct
+  -- from settled: nobody paid it, it was replaced. It is the entire freeze
+  -- mechanism — without it a summary's transfer and the share it consolidated
+  -- would both be live and neither would know about the other (the exact
+  -- ambiguity that made minimized transfers un-tappable in Phase 6).
+  -- Reverting a summary nulls this and the share is simply open again.
+  summary_id uuid references settlement_events(id),
   primary key (item_id, person_id)
 );
 
--- ── settlements (payment ledger) ────────────────────────────────────────
--- A payment from one person to another that offsets their balance.
--- recording_id set when settling a specific record; null = general settle-up.
-create table settlements (
-  id           uuid primary key default gen_random_uuid(),
-  owner_id     uuid not null references profiles(id) on delete cascade,
-  from_person  uuid not null references people(id),
-  to_person    uuid not null references people(id),
-  amount       numeric not null,
-  recording_id uuid references recordings(id) on delete set null,
-  note         text,
-  created_at   timestamptz default now()
+-- ── summary_transfers (the live obligations a summary creates) ──────────
+-- "C pays A ฿200". Replaces the shares it consolidated, and carries its own
+-- settled_at with exactly the same lifecycle as a share's (tap = paid, tap
+-- again = unpaid, faded + struck when settled).
+--
+-- OPEN DEBT = anything not settled AND not superseded. The one rule, applied
+-- identically to shares and transfers — which is why a second summary sweeps up
+-- new expenses AND unpaid transfers from the first with no special-casing.
+--
+-- home_amount is PINNED, not derived: netting several expenses (each with its
+-- own pinned rate) into two transfers has no unique correct home split, so the
+-- amount itself is stored rather than recomputed later. Same reasoning as
+-- expenses.home_rate — a figure that is re-derived at display time is a figure
+-- that can silently change.
+create table summary_transfers (
+  id            uuid primary key default gen_random_uuid(),
+  owner_id      uuid not null references profiles(id) on delete cascade,
+  summary_id    uuid not null references settlement_events(id) on delete cascade,
+  recording_id  uuid references recordings(id) on delete set null,  -- denormalized from the summary, so a record-scoped load is one indexed filter
+  from_person   uuid not null references people(id),   -- the debtor
+  to_person     uuid not null references people(id),   -- the creditor
+  amount        numeric not null,   -- in the record's base currency
+  currency      text,
+  home_amount   numeric,
+  home_currency text,               -- the era this transfer's home amount is in
+  settled_at    timestamptz,
+  superseded_by uuid references settlement_events(id),  -- a LATER summary folded this unpaid transfer in
+  created_at    timestamptz default now()
 );
 
 -- ── indexes ─────────────────────────────────────────────────────────────
@@ -140,7 +190,11 @@ create index on expenses(owner_id);
 create index on expenses(recording_id);
 create index on expense_items(expense_id);
 create index on expense_item_members(owner_id);
-create index on settlements(owner_id);
+create index on settlement_events(owner_id);
+create index on settlement_events(recording_id);
+create index on summary_transfers(owner_id);
+create index on summary_transfers(recording_id);
+create index on summary_transfers(summary_id);
 
 -- ── auto-create profile + "self" person on signup ───────────────────────
 create or replace function handle_new_user()
@@ -172,7 +226,8 @@ alter table recording_members    enable row level security;
 alter table expenses             enable row level security;
 alter table expense_items        enable row level security;
 alter table expense_item_members enable row level security;
-alter table settlements          enable row level security;
+alter table settlement_events    enable row level security;
+alter table summary_transfers    enable row level security;
 
 -- profiles: user sees/edits only their own row
 create policy "profiles_select" on profiles for select using (id = auth.uid());
@@ -186,4 +241,5 @@ create policy "owner_all" on recording_members    for all using (owner_id = auth
 create policy "owner_all" on expenses             for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owner_all" on expense_items        for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owner_all" on expense_item_members for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
-create policy "owner_all" on settlements          for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+create policy "owner_all" on settlement_events    for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+create policy "owner_all" on summary_transfers    for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
