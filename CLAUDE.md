@@ -435,7 +435,11 @@ Small polish noticed, non-blocking: (a) `ExpenseForm` edit mode's "logged · [ts
    - **⚠️ The scoping does NOT dissolve the conflict.** Phoom reached (i) via the stranger-routing argument, but that is not why `minimizeTransfers` was pulled from the record — it was pulled because a minimized transfer **can't be marked paid** without leaving a residual and a stuck state (a bug hit in live testing). That defect is about *tapping*, not about who knows whom, so it survives into the toggle.
    - **The one question the toggle forces: what happens when you tap a row in the minimized view?** The cheap answer (rows are a checklist; settle everything once all are ticked) breaks on real behaviour — people settle over days and tick-state has nowhere durable to live; persisting ticks IS a ledger minus the honesty. **Recommendation unchanged: build the payment ledger** (balance = shares − payments). Then the toggle is trivially correct — both views group the same question, and recording a payment is truthful whether or not the rest of the plan has happened — and it's the same foundation the audit trail and payment-evidence photo need.
 
-   ### ✅ PHOOM DECIDED 2026-08-07 — BUILD THE LEDGER, LOG EVERYTHING IN ONE TABLE
+   ### 🔴 SUPERSEDED — the free-form payment ledger below was REPLACED the same day. Read the SUMMARY MODEL section that follows it.
+
+   Commit `fb1ce6f` locked a payment-ledger design (balance = shares − payments). Hours later Phoom proposed something better and it was adopted; the ledger text is kept only because its *reasoning* still explains why a plain view-toggle can't work. **Build the summary model, not this.**
+
+   ### ~~✅ PHOOM DECIDED 2026-08-07 — BUILD THE LEDGER, LOG EVERYTHING IN ONE TABLE~~ (superseded)
 
    Both recommendations accepted: (1) **build the payment ledger** (not the cheap read-only plan, not defer); (2) **one append-only table logs payments AND every share settle/unsettle** — so un-settling stops erasing itself, which was the original July audit-trail complaint. Three sub-units below; **do NOT collapse them into one drop.**
 
@@ -456,7 +460,67 @@ Small polish noticed, non-blocking: (a) `ExpenseForm` edit mode's "logged · [ts
    #### 5b — minimized toggle in the record settle sheet. 🟠 GLM 5.2, opencode.
    Toggle "who owes who" (default, unchanged) | "fewest payments". Minimized rows tap → record a payment in the record's base currency (optimistic + background write, the P1 pattern); tap again → void it. Payments must also be **visible as their own rows** in the record so they are never invisible balance-movers. Answer the `paid` question flagged above.
 
-   #### 5c — audit-trail surfaces. 🟠 GLM 5.2, opencode.
+   #### ~~5c — audit-trail surfaces~~ (superseded — see 5d below)
    Settlement → History gains an events/payments section; notes capturable on void ("why was this reversed?"); voided rows shown struck. This is where the July ask finally lands.
+
+   ---
+
+   ### 🔴 THE SUMMARY MODEL — LOCKED 2026-08-07 (Phoom's design). THIS IS WHAT TO BUILD.
+
+   **Phoom's move: minimization is not a VIEW, it's an ACTION.** You invoke it on a record (with verification); every currently-open debt is **frozen** and replaced by a small set of **transfers**; you settle the transfers instead. Reversible only while nothing in it is settled.
+
+   **Why this is right, and why the toggle was wrong.** A view is a function of current state — it recomputes whenever anything changes, so you can never point at it and say "that's the plan we agreed." Worse, the old bug wasn't the *routing*, it was that the underlying shares kept living independently, so "B paid A ฿100" and "A owes B ฿200" were both true at once and neither knew about the other. **Freezing the shares kills that ambiguity at the source** instead of papering over it with an allocation rule. In accounting terms this is a **closing entry**: take everything open, net it, post the result, mark the originals closed. **This also means free-form payments are NOT needed** — the 3-way cycle is solved by consolidation, so the payment-ledger design above is genuinely superseded, not merely deferred.
+
+   **🔑 THE ONE RULE that makes "repeatable" fall out for free:**
+   > **Open debt = anything not settled AND not superseded.**
+
+   It applies identically to shares and to transfers, so a second summary sweeps up new expenses *and* any unpaid transfers from the first with zero special-casing — a transfer is just another thing a later summary can close.
+
+   **Naming (Phoom's call):** the object is a **"Summary"**, its rows are **"transfers"**. ⚠️ Evie flagged that "summary" reads like a view; the resolution is that **the copy carries the weight** — the button is a VERB (*"Create summary"*), closed expenses read *"in Summary 1"*. Do not soften those into nouns. **Never call these "tokens"** — that word already means a placeholder person in Papaya.
+
+   #### Data model — 2 tables + 1 column
+   - **`settlement_events`** — the append-only log. A summary IS an event (`kind='summary'`), so it lives where it belongs; reverting **appends** `kind='summary_reverted'` rather than erasing. Also carries `settle_shares`/`unsettle_shares` (the July audit ask) and `note`. Columns: `id`, `owner_id`, `kind`, `recording_id`, `shares` jsonb, `note`, `created_at`.
+   - **`summary_transfers`** — the live obligations. `id`, `owner_id`, `summary_id` → `settlement_events(id)`, `from_person`, `to_person`, `amount` + `currency`, **`home_amount` + `home_currency`** (see the wrinkle below — pin the AMOUNT, not just a rate), `settled_at` (behaves exactly like a share's — same lifecycle, same faded+struck treatment), `superseded_by` → a later summary's id.
+   - **`expense_item_members.summary_id`** — the entire freeze mechanism. Set ⇒ the share is closed and excluded from balances. Null it ⇒ back to normal.
+   - **DROP the old `settlements` table** + the dead `recordPayment`/`deletePayment` in `balances.js`. ✅ **Phoom confirmed `select count(*) from settlements;` = 0 on 2026-08-07** — safe to drop.
+   - RLS: the same plain `owner_id = auth.uid()` check as every other table. **Never a cross-table policy lookup** (the v1 recursive-RLS bug).
+
+   #### Revert rule (precise)
+   Only the **latest** summary can be reverted, and only while **none of its transfers are settled**. You cannot unwind Summary 1 while Summary 2 sits on top of it. Revert = null the `summary_id` on everything it froze + append a `summary_reverted` event. Settling even one transfer locks it until you un-settle that transfer first (Phoom's explicit design — the guard, not a trap).
+
+   #### Money core (5a)
+   - `buildContributions` **skips shares with `summary_id` set** — they're closed, not settled; a distinct state.
+   - New `buildTransferAtoms(data)` turns unsettled, non-superseded transfers into **synthetic contributions** (`debtor`/`creditor` pair, `settled: false`, `settleKeys: []`, a `transferId` marker) — the same trick the ledger design used, so `pairNet`, `pairNetGrouped`, `netByPerson`, `directTransfers` all work **unchanged**. Appended by `buildContributions` when `data.transfers` is present; screens that must exclude them filter `!c.transferId`.
+   - New pure **`planSummary(contribs, scope, key='base')`** → `{ transfers, shareKeys }`: wraps `minimizeTransfers` over `netByPerson`, and returns the share keys to freeze. This is the function the preview-confirm renders BEFORE anything is written.
+   - `loadSettlementData` gains `transfers` in **both** the global and record-scoped paths.
+   - **Unaffected by design (verify, don't touch):** `statusForExpense` reads raw member rows; `ExpenseDetail` builds per-person rows from items directly. `settled_at` semantics are completely unchanged.
+
+   #### ⚠️ The home-currency wrinkle — a real 5a decision
+   In a foreign-currency record every expense pins its **own** native→home rate, so netting five expenses into two transfers has **no unique correct home split** (it's a transportation problem, not a division). **Decision: pin each transfer's `home_amount` explicitly**, converting the whole summary at the **record's own rate** (`recordings.exchange_rate`) — one explainable number, and pinning the amount rather than re-deriving it keeps the invariant ([[papaya-currency-invariant]]) intact. **Acceptance criterion: the record's home TOTAL must be identical before and after a summary**; individual people's home figures may shift by a hair, and that is accepted.
+
+   #### 🔑 Net-preservation properties — these are the TESTS, not just prose
+   - **A person's net NEVER changes across a summary.** This is the guarantee minimization exists to keep. Assert it for every person.
+   - **Within the record, gross can only shrink** — after a summary you are purely a creditor or purely a debtor, because the plan discharges nets. (You owe B ฿100, C owes you ฿100 ⇒ the plan is "C pays B ฿100" and you vanish from it.)
+   - **⚠️ Globally, gross can occasionally GROW — accepted, and Phoom was told.** Summarising one record can break a cancellation you had with someone across two records: you owe Rui ฿50 in Korea, Rui owes you ฿50 from a dinner (today they cancel to ฿0/฿0); summarise Korea, the plan pairs you with Sofia, and now Rui owes you ฿50 while you owe Sofia ฿50. **Net still zero.** Write this as a test that documents the chosen behaviour (same spirit as the "unpinned row still produces the 1650× bug" test).
+   - Minimization can also create a transfer between You and someone you **never shared an item with**. Accepted — Phoom's criterion is that a record's party know each other.
+
+   #### Sub-units — four, and do NOT collapse them
+   | | | |
+   |---|---|---|
+   | **5a** | data model + money core + `planSummary` | 🔴🔴 Claude Code (Evie/Opus), **fresh session**, tests-first |
+   | **5b** | the summary flow in the record: preview-confirm, transfers list, revert | 🟠 GLM 5.2 |
+   | **5c** | the **"closed"** treatment across four screens | 🟠 GLM 5.2 |
+   | **5d** | audit surfaces in Settlement → History | 🟠 GLM 5.2 |
+
+   **5b** — "Create summary" opens a **preview-confirm showing the actual plan** (*"5 expenses · 12 shares will be closed and replaced by 2 transfers"*). **Deliberately NOT a typed confirm** — that was right for the home-currency switch because it's permanent; this is reversible while unsettled, so typing would be theatre. Transfers settle optimistically (the P1 pattern). Revert per the rule above.
+
+   **5c is the real work, and it's why this is bigger than the toggle.** "Closed" is a new state four screens must respect: `ExpenseDetail` (per-person toggles go DEAD, shows *"in Summary 1"*), `ExpenseForm` (edit blocked — this is what makes the transfers trustworthy), `RecordingDetail`, `Home` feed.
+
+   #### Accepted limitations (do not solve)
+   - **Transfers settle all-or-nothing** — "B owes ฿100, paid ฿60" is not representable, same as today's rows. Partial payment would want a real payment ledger underneath, which this model avoids needing.
+   - **Summarising a single-payer record does nothing useful** — minimized and direct are already identical there. Put a quiet line in the confirm so it doesn't look broken.
+
+   #### 5a test list (on top of the 94, which must stay green UNTOUCHED — no summary rows ⇒ byte-identical balances, and that IS the migration-safety proof)
+   Phoom's 3-way cycle (A owes B 200, B owes C 300, C owes A 500) plans to exactly 2 transfers and nets everyone to zero; **net preserved per person** across a summary; within-record gross non-increasing; the cross-record gross-growth case documented; closed shares excluded; a settled transfer excluded; a superseded transfer excluded; **summary #2 sweeps new shares + unsettled transfers from #1** (the repeatability rule); revert restores exactly the pre-summary contributions; **home total identical before/after**; single-payer record ⇒ plan equals the direct view.
 
 6. **Notes, bank details, payment evidence** (his 2.6/2.7/2.8). **Needs Supabase Storage — not wired at all yet.** **Critique: attach bank details/QR to the PERSON (People tab), not the expense** — otherwise you re-enter Rui's QR on every expense he pays. 2.8 builds directly on unit 4's ledger.
