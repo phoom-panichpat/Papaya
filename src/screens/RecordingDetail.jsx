@@ -27,8 +27,12 @@ function SettledPill({ status }) {
     ? { label: status.label, color: "var(--accent)" }
     : map[status.kind];
   if (!s) return null;
+  // Shrinkable + ellipsized: this is the variable-length half of the meta line
+  // ("2 of 4 · Sofia open"), and inside a group box the card padding makes the
+  // row narrow enough to collide. It yields first so "paid by X" — the short,
+  // fixed part people scan down the column — always survives intact.
   return (
-    <span className="mono" style={{ fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", color: s.color }}>{s.label}</span>
+    <span className="mono" style={{ fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", color: s.color, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{s.label}</span>
   );
 }
 
@@ -59,7 +63,21 @@ function Chevron({ open }) {
 // row on any state change — wasteful with a long log, and it throws away the
 // rows' animation state.
 // ── expense row (shared by the loose feed and a group's expense list) ────
-function ExpenseRow({ e, idx, locked, onClick, base, dual, recMap, home, era }) {
+// Who paid, as a quiet mono caption on the row's meta line. Deliberately FIRST,
+// ahead of the status: the status label is the variable-length one ("2 of 4 ·
+// Sofia open"), so leading with the payer keeps every name at the same
+// x-position down the list — which is what makes the column scannable for
+// "wait, who paid that?" without opening anything.
+function PaidBy({ name }) {
+  return (
+    <span className="mono" style={{ fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-3)", flex: "none" }}>
+      paid by {name}
+    </span>
+  );
+}
+const MetaDot = () => <span style={{ color: "#C6C0B1", fontSize: 9, flex: "none" }}>·</span>;
+
+function ExpenseRow({ e, idx, locked, onClick, base, dual, recMap, home, era, nameOf }) {
   // A locked expense's shares are CLOSED, not open — the pill would say
   // "open" and contradict the group header, so the group's state speaks for it.
   const settled = e.status?.kind === "settled";
@@ -71,7 +89,9 @@ function ExpenseRow({ e, idx, locked, onClick, base, dual, recMap, home, era }) 
       <span className="mono" style={{ fontSize: 10, color: "var(--text-4)", flex: "none" }}>{padIndex(idx)}</span>
       <span style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
         <span style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textDecoration: settled ? "line-through" : "none" }}>{e.title}</span>
-        <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden", whiteSpace: "nowrap" }}>
+          <PaidBy name={nameOf(e.paid_by)} />
+          <MetaDot />
           {!locked && <SettledPill status={e.status} />}
           {locked && (
             <span className="mono" style={{ fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-4)" }}>locked</span>
@@ -540,7 +560,11 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
                   <span style={{ width: 22, height: 22, borderRadius: 7, border: on ? "none" : "1.5px solid var(--hairline)", background: on ? "var(--accent)" : "var(--bg)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, flex: "none" }}>{on ? "✓" : ""}</span>
                   <span style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 3, flex: 1 }}>
                     <span style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textDecoration: settled ? "line-through" : "none" }}>{e.title}</span>
-                    <SettledPill status={e.status} />
+                    <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden", whiteSpace: "nowrap" }}>
+                      <PaidBy name={nameOf(e.paid_by)} />
+                      <MetaDot />
+                      <SettledPill status={e.status} />
+                    </span>
                   </span>
                   <span style={{ display: "flex", alignItems: "baseline", gap: 2, flex: "none" }}>
                     <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(e.currency || base)}</span>
@@ -559,7 +583,7 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
               <div style={{ padding: "24px 0", color: "var(--text-3)", fontSize: 14 }}>No expenses yet.</div>
             ) : feed.map((entry, idx) => {
               if (entry.kind === "expense") {
-                return <ExpenseRow key={entry.id} e={entry.e} idx={idx + 1} onClick={() => onOpenExpense(entry.e.id)} base={base} dual={dual} recMap={recMap} home={home} era={era} />;
+                return <ExpenseRow key={entry.id} e={entry.e} idx={idx + 1} onClick={() => onOpenExpense(entry.e.id)} base={base} dual={dual} recMap={recMap} home={home} era={era} nameOf={nameOf} />;
               }
               const g = entry.g;
               const sumHidden = collapsed[`${g.id}:sum`];
@@ -624,7 +648,7 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
                       </span>
                     </div>
                     {!expHidden && g.exps.map((e, i) => (
-                      <ExpenseRow key={e.id} e={e} idx={i + 1} locked={g.frozen} onClick={() => onOpenExpense(e.id)} base={base} dual={dual} recMap={recMap} home={home} era={era} />
+                      <ExpenseRow key={e.id} e={e} idx={i + 1} locked={g.frozen} onClick={() => onOpenExpense(e.id)} base={base} dual={dual} recMap={recMap} home={home} era={era} nameOf={nameOf} />
                     ))}
                   </div>
                 </div>

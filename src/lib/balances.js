@@ -288,7 +288,15 @@ export async function renameGroup(groupId, name) {
 // Dissolve a LIVE group — the expenses go back to standing on their own.
 // Membership is released BEFORE the row is deleted so a failure leaves an empty
 // group (visible, harmless) rather than expenses pointing at nothing.
+//
+// ⚠️ REFUSES a frozen group. Today the UI can't ask (the Ungroup button only
+// renders while live), but deleting a frozen one would strand its closed shares
+// with no group left to unfreeze them — debts that exist and are invisible,
+// which is the worst failure this model can have. Guard the invariant here, at
+// the write, rather than trusting every future call site to remember.
 export async function ungroup(groupId, recordingId) {
+  const { data: g } = await supabase.from("summary_groups").select("frozen_at").eq("id", groupId).maybeSingle();
+  if (g?.frozen_at) throw new Error("Cannot ungroup a frozen summary — clear its payments first.");
   await setGroupExpenses(groupId, [], recordingId);
   const { error } = await supabase.from("summary_groups").delete().eq("id", groupId);
   if (error) throw error;
