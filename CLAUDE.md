@@ -520,11 +520,51 @@ Small polish noticed, non-blocking: (a) `ExpenseForm` edit mode's "logged · [ts
    - **Phoom also asked to disable it when the record is "already the least transactions possible" (e.g. single-payer).** Deliberately NOT done, and he was told why: once 5c lands, a summary also **locks the record's expenses**, which is a real effect even when the payment count doesn't drop. Disabling it now and re-enabling it one unit later is churn, and it would leave a simple record with no way to lock. The quiet "this won't reduce the number of payments" line stays; **5c should rewrite that copy to say what it DOES do.**
    - Cosmetic, pre-existing (not from 5b): transfer rows read "You pays Rui" — the `{from} pays {to}` template predates this unit and shows the same on direct rows.
 
-   **5c is the real work, and it's why this is bigger than the toggle.** "Closed" is a new state four screens must respect: `ExpenseDetail` (per-person toggles go DEAD, shows *"in Summary 1"*), `ExpenseForm` (edit blocked — this is what makes the transfers trustworthy), `RecordingDetail`, `Home` feed.
+   **~~5c/5d as originally planned are SUPERSEDED~~ — see §10.5R below.** Phoom used 5b on a real, still-growing record and the sheet didn't hold up. The freeze-on-create model and the bottom-sheet UI are both replaced. 5a survives.
 
    #### Accepted limitations (do not solve)
    - **Transfers settle all-or-nothing** — "B owes ฿100, paid ฿60" is not representable, same as today's rows. Partial payment would want a real payment ledger underneath, which this model avoids needing.
-   - **Summarising a single-payer record does nothing useful** — minimized and direct are already identical there. Put a quiet line in the confirm so it doesn't look broken.
+
+---
+
+## 10.5R 🔴 THE SUMMARY-GROUP REDESIGN — LOCKED 2026-08-08 (Phoom). BUILD THIS.
+
+**This supersedes the 5b sheet UI and the original 5c/5d.** Phoom's verdict after real use: *"the summary UI feels incomplete and hard to use… it needs redesign."* Two concrete failures, both only visible on a record that is **still in use with expenses stacking up** — which is exactly the case the earlier design was never exercised against:
+
+1. **"Settle up this record" is impractical at scale.** Ten "who pays who" rows is noise, not an answer. → the direct-pairwise sheet is **dropped**; consolidation becomes the only record-level settle surface.
+2. **A summary didn't show what was already paid**, so a live record became confusing the moment new expenses arrived.
+
+### 🔑 The one change that makes this better than what we built: THE FREEZE MOVES TO FIRST PAYMENT
+The built model froze every share the instant you created a summary — which is why adding one expense afterwards forced a full revert. In the new model a group is **live and recomputing** until **someone marks a transfer paid**, and only then does it harden.
+
+That trigger is the correct one, and it is the same instinct as toggle-in-place settling one level up: **a plan nobody has acted on is safe to recompute; the moment real money moves it must stop moving.** It removes the revert dance for the common case entirely. (The original rationale for freezing — that a share and the transfer replacing it must never both be live — is untouched: that ambiguity only matters once a transfer has been paid, which is precisely when the freeze now happens.)
+
+### The interaction (all on the RECORDING DETAIL screen — no bottom sheet)
+- **"Settle up this record"** no longer opens a sheet. It puts the log list into **check-mode**: a checkbox appears in front of every expense, **all ticked by default** (Phoom's call — the answer is "all of them" ~90% of the time; unticking is the escape hatch for "settle up week one, we're still going"), plus a check-all/clear toggle. The resulting **plan renders live as you tick**.
+  - **Check-mode doubles as the record's "who owes who" view** — this is what replaces the dropped sheet. Tap Settle up → see the plan → Done, or back out. Looking and committing are the same gesture, so no separate list is needed and a never-grouped record is still readable.
+- **Done** collapses the ticked expenses into one **group box** in the log. Two **independently collapsible** halves: **top = the summary** (the transfers), **bottom = the expenses it covers**.
+- **While the group is LIVE (nothing paid):** the expenses inside stay fully editable, and **the summary recomputes on every change**. Add/edit/delete inside the group → the transfers update.
+- **First transfer marked paid → the WHOLE group freezes** (all-or-nothing — the transfers are a joint net and cannot harden piecemeal). Its expenses become uneditable; their per-person settle boxes are gone; existing settled/open states are preserved exactly as they were.
+- **Unfreeze = unchecking.** Clearing every settled transfer in a group unfreezes it and the expenses become editable again. Same rule as the old `canRevertSummary`, different trigger.
+- **A frozen group is never added to.** New expenses form a new group. This is what keeps repeatability working.
+- **Per-person settle boxes are hidden as soon as an expense joins a group — even a live one** (Phoom agreed). Mathematically they'd be harmless while live (the summary just recomputes), but they give two different ways to say "paid" for the same debt at the same time, which is the exact ambiguity that made minimized transfers untappable in Phase 6. Rule: **once grouped, the group is where you settle.** The expense still opens and reads normally; you just can't settle inside it.
+
+### Log ordering (Phoom, 2026-08-08) — currently `ascending: true`, must flip
+> *"when new expense come into log, put it on top. so old summary (which may be already clear) stay in bottom, user don't have to scroll to find new unsettled expense if there is 100 of expenses."*
+
+Rule: **things that still need attention first, newest first within that; fully cleared things sink to the bottom, newest first among themselves.** An "attention" item = an ungrouped expense with any open share, or a group with any unpaid transfer. **Evie's call, easily reversed:** the same sink-when-cleared rule is applied to ungrouped settled expenses too, not just groups — one rule for the whole list reads better than a special case for groups. `RecordingDetail.jsx:55` orders `ascending: true` today.
+
+### Group identity
+A two-week record ends up as `[Group][Group][loose expenses]`, so "Summary 1" won't do. Groups get a **name auto-derived from the date range of the expenses they contain** ("Aug 1–7"), **editable**. Decided up front because it drives the group-header design.
+
+### Data model — what changes from 5a
+**5a survives almost entirely.** `settlement_events`, `summary_transfers`, `expense_item_members.summary_id`, `planSummary`, `buildTransferAtoms`, the net-preservation guarantees and all 42 tests stay. Two changes:
+- **A group is a set of EXPENSES, and it persists while live.** Needs a group→expense link (a `summary_id`-style column on `expenses`, or a join table) plus a `name`. The old model had no membership concept — the group was implicitly "everything open at creation time."
+- **Transfers are DERIVED while live and MATERIALIZED at freeze.** No `summary_transfers` rows exist until first payment; `planSummary` renders the live plan straight from the group's open shares. This keeps one source of truth and is what lets the summary recompute for free.
+- So `createSummary` is re-pointed at **freeze** (materialize transfers with pinned amounts + stamp `summary_id` on the open shares) and `revertSummary` at **unfreeze**. Their write-order safety reasoning carries over unchanged.
+
+### Cost, stated honestly
+5b's bottom sheet, preview-confirm dialog and button gate are **discarded** (~most of that unit). `RecordingDetail.jsx` becomes a substantially richer screen: check-mode, nested independently-collapsible groups, two freeze states, and a re-sorted log. **🔴 Difficult — build in Claude Code, not opencode**; this is where bugs hide, and it touches the settle path. `npm test` must stay ≥136/136 throughout.
 
    #### ✅ 5a — BUILT 2026-08-07 (Claude Code/Opus 5). `npm test` **136/136**, the original 94 green and untouched; build clean. ⚠️ **MIGRATION NOT YET RUN LIVE** — the paste block was handed to Phoom.
    Safe to deploy before the SQL runs: no summary rows exist ⇒ no share is frozen ⇒ every balance is byte-identical, and **the original 94 staying green IS that proof**.
