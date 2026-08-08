@@ -8,7 +8,6 @@ import CreateRecording from "./screens/CreateRecording";
 import RecordingDetail from "./screens/RecordingDetail";
 import ExpenseDetail from "./screens/ExpenseDetail";
 import Settlement from "./screens/Settlement";
-import RecordSettleSheet from "./screens/RecordSettleSheet";
 import Settings from "./screens/Settings";
 import PersonDetail from "./screens/PersonDetail";
 
@@ -320,7 +319,6 @@ export default function App() {
               refreshKey={refreshKey}
               onAddExpense={() => push({ type: "expense", recordingId: o.id })}
               onOpenExpense={openExpense}
-              onSettle={() => push({ type: "recordSettle", id: o.id })}
               onEdit={(id) => push({ type: "createRecording", editRecordingId: id })}
               onArchiveClose={archiveClose}
               onClose={popOverlay}
@@ -337,7 +335,6 @@ export default function App() {
               onClose={popOverlay}
             />
           );
-        else if (o.type === "recordSettle") el = <RecordSettleSheet recordingId={o.id} people={people} onClose={() => popOverlay(true)} />;
         else if (o.type === "settings") el = <Settings people={people} email={session.user?.email || ""} homeCurrency={homeCurrency} onClose={popOverlay} />;
         else if (o.type === "personDetail")
           el = (

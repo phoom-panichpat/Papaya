@@ -304,6 +304,47 @@ export function planSummary(contribs, scope, key = "base") {
   };
 }
 
+// ── summary groups (the visible half of a summary) ───────────────────────
+// A group is a set of EXPENSES you've decided to settle together. It stays LIVE
+// — no transfer rows, plan re-derived on every render — until someone marks a
+// transfer paid, at which point it freezes into exactly the model above.
+
+// Auto-name a group from the date range of the expenses in it ("Aug 1–7").
+// A name has to be recognisable at a glance once a two-week record holds
+// several groups; "Summary 1" doesn't survive that. Editable, so this is only
+// the default.
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+export function groupDateName(dates = []) {
+  const ds = dates.map((d) => new Date(d)).filter((d) => !isNaN(d)).sort((a, b) => a - b);
+  if (!ds.length) return "Summary";
+  const a = ds[0], b = ds[ds.length - 1];
+  const fmt = (d) => `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+  if (a.toDateString() === b.toDateString()) return fmt(a);
+  // same month ⇒ don't repeat it ("Aug 1–7" rather than "Aug 1 – Aug 7")
+  if (a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear()) {
+    return `${fmt(a)}–${b.getDate()}`;
+  }
+  return `${fmt(a)} – ${fmt(b)}`;
+}
+
+// Order a record's log. THE RULE: things that still need attention come first,
+// newest first within that; fully cleared things sink to the bottom, newest
+// first among themselves.
+//
+// Phoom's reason: with 100 expenses you should never scroll to find the new
+// unsettled one, and a long-since-settled group shouldn't sit in the way. The
+// same rule is applied to plain settled expenses, not just groups — one rule
+// for the whole list reads better than a special case.
+//
+// entries: [{ date, open }] — `open` = has anything left to do (an unsettled
+// share, or a group with an unpaid transfer). For a group, `date` is its NEWEST
+// expense, so a group that's still being added to keeps its place.
+export function sortLogEntries(entries = []) {
+  return [...entries].sort(
+    (a, b) => (b.open ? 1 : 0) - (a.open ? 1 : 0) || new Date(b.date) - new Date(a.date)
+  );
+}
+
 // A summary can be reverted only while it is the LATEST (nothing has superseded
 // its transfers) and NONE of its transfers are settled. Settling even one locks
 // it — un-settle that transfer first. This is the guard, not a trap: you cannot

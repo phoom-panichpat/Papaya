@@ -13,6 +13,7 @@ import {
   pairNetByEra, sumHomeByEra,
   serviceCharge, grandTotal, feeFactor,
   buildTransferAtoms, planSummary, canRevertSummary,
+  groupDateName, sortLogEntries,
 } from "../src/lib/balances-core.mjs";
 
 let pass = 0, fail = 0;
@@ -838,6 +839,123 @@ const taxiShare = (d) => buildContributions(d, HOME).find((c) => c.debtor === "y
     check("global: …but the You↔Rui cancellation is broken (accepted)",
       approx(pairNet(after, "you", "rui"), 50));
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SUMMARY GROUPS — live until first payment, then frozen
+// ═══════════════════════════════════════════════════════════════════════
+// A group is a set of EXPENSES settled together. While live it holds no
+// transfer rows at all: the plan is re-derived every render, so editing an
+// expense inside just changes the plan. The first payment freezes it into the
+// model tested above. These cover the two pure helpers plus the property that
+// makes "live" safe — that a group's plan tracks its expenses exactly.
+{
+  const d = (s) => new Date(s).toISOString();
+
+  // ── group naming: recognisable at a glance in a long record ──
+  check("group name: single day", groupDateName([d("2026-08-03T10:00:00")]) === "Aug 3");
+  check("group name: same month collapses the second month",
+    groupDateName([d("2026-08-01T09:00:00"), d("2026-08-07T22:00:00")]) === "Aug 1–7");
+  check("group name: across months spells both",
+    groupDateName([d("2026-07-28T09:00:00"), d("2026-08-03T22:00:00")]) === "Jul 28 – Aug 3");
+  check("group name: unordered input still reads low→high",
+    groupDateName([d("2026-08-07T09:00:00"), d("2026-08-01T09:00:00")]) === "Aug 1–7");
+  check("group name: empty falls back rather than rendering NaN",
+    groupDateName([]) === "Summary");
+  check("group name: junk dates are ignored, not rendered",
+    groupDateName(["not-a-date", d("2026-08-05T09:00:00")]) === "Aug 5");
+
+  // ── log ordering: attention first, newest first, cleared sinks ──
+  const log = [
+    { id: "old-open",    date: d("2026-08-01"), open: true },
+    { id: "new-cleared", date: d("2026-08-09"), open: false },
+    { id: "new-open",    date: d("2026-08-08"), open: true },
+    { id: "old-cleared", date: d("2026-08-02"), open: false },
+  ];
+  const order = sortLogEntries(log).map((e) => e.id);
+  check("log order: open items lead, newest first",
+    order[0] === "new-open" && order[1] === "old-open");
+  check("log order: cleared items sink even when they're the newest thing",
+    order[2] === "new-cleared" && order[3] === "old-cleared");
+  check("log order: does not mutate its input", log[0].id === "old-open");
+  check("log order: empty is safe", sortLogEntries([]).length === 0);
+
+  // ── a LIVE group's plan tracks its expenses ──
+  // This is the property that makes freeze-on-first-payment safe: nothing is
+  // written while live, so the plan is always a pure function of what's in the
+  // group right now. Editing an expense inside must move the plan, and the
+  // group's membership must be the only thing that decides its scope.
+  const base = () => ({
+    people: [{ id: "you", is_self: true }, { id: "rui" }, { id: "sofia" }],
+    recordings: [{ id: "r", base_currency: "THB", exchange_rate: 1, home_currency: "THB" }],
+    expenses: [
+      { id: "e1", recording_id: "r", currency: "THB", paid_by: "you", total_amount: 300, home_rate: 1, home_currency: "THB", summary_group_id: "g1" },
+      { id: "e2", recording_id: "r", currency: "THB", paid_by: "rui", total_amount: 150, home_rate: 1, home_currency: "THB", summary_group_id: "g1" },
+      { id: "e3", recording_id: "r", currency: "THB", paid_by: "you", total_amount: 90,  home_rate: 1, home_currency: "THB", summary_group_id: null }, // ungrouped
+    ],
+    items: [
+      { id: "i1", expense_id: "e1", amount: 300 },
+      { id: "i2", expense_id: "e2", amount: 150 },
+      { id: "i3", expense_id: "e3", amount: 90 },
+    ],
+    members: [
+      { item_id: "i1", person_id: "you" }, { item_id: "i1", person_id: "rui" }, { item_id: "i1", person_id: "sofia" },
+      { item_id: "i2", person_id: "you" }, { item_id: "i2", person_id: "rui" }, { item_id: "i2", person_id: "sofia" },
+      { item_id: "i3", person_id: "you" }, { item_id: "i3", person_id: "rui" },
+    ],
+    transfers: [],
+  });
+  const inGroup = (data, gid) => {
+    const ids = new Set(data.expenses.filter((e) => e.summary_group_id === gid).map((e) => e.id));
+    return (c) => ids.has(c.expenseId);
+  };
+
+  const g0 = base();
+  const p0 = planSummary(buildContributions(g0, HOME), inGroup(g0, "g1"), "base");
+  check("live group: a group with no transfer rows still plans",
+    p0.transfers.length > 0 && p0.shareKeys.length === 4);
+  check("live group: the ungrouped expense is NOT swept in",
+    !p0.shareKeys.some((k) => k.itemId === "i3"));
+
+  // edit an expense inside the group -> the plan moves with it
+  const g1 = base();
+  g1.expenses[0] = { ...g1.expenses[0], total_amount: 600 };
+  g1.items[0] = { ...g1.items[0], amount: 600 };
+  const p1 = planSummary(buildContributions(g1, HOME), inGroup(g1, "g1"), "base");
+  const owedTo = (p, id) => p.transfers.filter((t) => t.to === id).reduce((s, t) => s + t.amount, 0);
+  check("live group: editing an expense inside changes the plan",
+    owedTo(p1, "you") > owedTo(p0, "you"));
+
+  // …and the ungrouped expense still never enters it
+  check("live group: membership is the ONLY thing that scopes the plan",
+    !p1.shareKeys.some((k) => k.itemId === "i3"));
+
+  // ── freezing a group behaves exactly like the summary model above ──
+  const frozen = (() => {
+    const data = base();
+    const p = planSummary(buildContributions(data, HOME), inGroup(data, "g1"), "base");
+    const keys = new Set(p.shareKeys.map((k) => `${k.itemId}:${k.personId}`));
+    return {
+      ...data,
+      members: data.members.map((m) =>
+        keys.has(`${m.item_id}:${m.person_id}`) ? { ...m, summary_id: "ev1" } : m),
+      transfers: p.transfers.map((t, i) => ({
+        id: `t${i}`, summary_id: "ev1", recording_id: "r",
+        from_person: t.from, to_person: t.to, amount: t.amount, currency: p.currency,
+        home_amount: t.homeAmount, home_currency: p.homeCurrency,
+        settled_at: null, superseded_by: null,
+      })),
+    };
+  })();
+  const cf = buildContributions(frozen, HOME);
+  check("frozen group: its shares are closed, the ungrouped expense is untouched",
+    cf.filter((c) => c.expenseId === "e3").length === 1 &&
+    !cf.some((c) => c.expenseId === "e1" || c.expenseId === "e2"));
+  const nBefore = netByPerson(buildContributions(base(), HOME), null, "home");
+  const nAfter = netByPerson(cf, null, "home");
+  ["you", "rui", "sofia"].forEach((p) =>
+    check(`frozen group: ${p}'s net is unchanged by freezing`,
+      approx(nBefore[p] || 0, nAfter[p] || 0)));
 }
 
 // ─────────────────────────────────────────────────────────────────────────

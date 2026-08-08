@@ -15,6 +15,7 @@ export {
   buildAliasMap, resolveAlias, patchContribsSettled, eraFor,
   serviceCharge, grandTotal, feeFactor,
   buildTransferAtoms, planSummary, canRevertSummary,
+  groupDateName, sortLogEntries,
 } from "./balances-core.mjs";
 
 // ── load everything the money layer needs ────────────────────────────────
@@ -134,6 +135,8 @@ export async function unsettleShares(rows) {
 // money silently gone, with nothing on screen to tell you. Fail loud, never
 // quiet. (If this ever proves not good enough, the upgrade is a Postgres RPC —
 // the same answer C2 needed for the same reason.)
+// Returns { summaryId, transfers } — the caller needs the written rows to settle
+// the transfer that triggered a freeze.
 export async function createSummary({ ownerId, recordingId, plan, note = null }) {
   const { data: ev, error: evErr } = await supabase
     .from("settlement_events")
@@ -145,8 +148,9 @@ export async function createSummary({ ownerId, recordingId, plan, note = null })
   if (evErr) throw evErr;
   const summaryId = ev.id;
 
+  let transfers = [];
   if (plan.transfers?.length) {
-    const { error } = await supabase.from("summary_transfers").insert(
+    const { data, error } = await supabase.from("summary_transfers").insert(
       plan.transfers.map((t) => ({
         owner_id: ownerId,
         summary_id: summaryId,
@@ -158,8 +162,9 @@ export async function createSummary({ ownerId, recordingId, plan, note = null })
         home_amount: t.homeAmount,
         home_currency: plan.homeCurrency,
       }))
-    );
+    ).select();
     if (error) throw error;
+    transfers = data || [];
   }
 
   // unpaid transfers from an earlier summary that this one folds in
@@ -176,7 +181,7 @@ export async function createSummary({ ownerId, recordingId, plan, note = null })
   ));
   const bad = results.find((r) => r.error);
   if (bad) throw bad.error;
-  return summaryId;
+  return { summaryId, transfers };
 }
 
 // Undo a summary. Only legal while it is the latest and none of its transfers
@@ -220,6 +225,97 @@ export async function settleTransfer(id, at) {
 export async function unsettleTransfer(id) {
   const { error } = await supabase.from("summary_transfers")
     .update({ settled_at: null }).eq("id", id);
+  if (error) throw error;
+}
+
+// ── summary groups ───────────────────────────────────────────────────────
+// A group is the visible half of a summary: a set of expenses you've decided to
+// settle together, LIVE (plan derived, nothing written but the membership)
+// until someone marks a transfer paid.
+//
+// Lifecycle: createGroup → [edit its expenses freely, plan recomputes] →
+// freezeGroup (on first payment: materializes transfers + closes shares) →
+// unfreezeGroup (on clearing every settled transfer).
+
+export async function loadGroups(recordingId) {
+  const [gRes, tRes] = await Promise.all([
+    supabase.from("summary_groups").select("*")
+      .eq("recording_id", recordingId).order("created_at", { ascending: false }),
+    supabase.from("summary_transfers").select("*").eq("recording_id", recordingId),
+  ]);
+  const transfers = tRes.data || [];
+  return (gRes.data || []).map((g) => ({
+    ...g,
+    // A live group has no transfer rows at all — its plan is derived. Only a
+    // frozen one carries them, keyed by the event created at freeze time.
+    transfers: g.freeze_event_id
+      ? transfers.filter((t) => t.summary_id === g.freeze_event_id)
+      : [],
+  }));
+}
+
+export async function createGroup({ ownerId, recordingId, expenseIds, name = null }) {
+  const { data, error } = await supabase.from("summary_groups")
+    .insert({ owner_id: ownerId, recording_id: recordingId, name })
+    .select("id").single();
+  if (error) throw error;
+  await setGroupExpenses(data.id, expenseIds, recordingId);
+  return data.id;
+}
+
+// Set a LIVE group's membership to exactly `expenseIds`. Clears any expense in
+// this record that pointed here and is no longer selected, so re-running
+// check-mode is idempotent. Also absorbs expenses from other live groups, which
+// is how two pending groups merge into one.
+export async function setGroupExpenses(groupId, expenseIds, recordingId) {
+  const clear = await supabase.from("expenses")
+    .update({ summary_group_id: null })
+    .eq("recording_id", recordingId).eq("summary_group_id", groupId);
+  if (clear.error) throw clear.error;
+  if (expenseIds?.length) {
+    const { error } = await supabase.from("expenses")
+      .update({ summary_group_id: groupId }).in("id", expenseIds);
+    if (error) throw error;
+  }
+}
+
+export async function renameGroup(groupId, name) {
+  const { error } = await supabase.from("summary_groups")
+    .update({ name: name || null }).eq("id", groupId);
+  if (error) throw error;
+}
+
+// Dissolve a LIVE group — the expenses go back to standing on their own.
+// Membership is released BEFORE the row is deleted so a failure leaves an empty
+// group (visible, harmless) rather than expenses pointing at nothing.
+export async function ungroup(groupId, recordingId) {
+  await setGroupExpenses(groupId, [], recordingId);
+  const { error } = await supabase.from("summary_groups").delete().eq("id", groupId);
+  if (error) throw error;
+}
+
+// FREEZE — triggered by the first payment, never by creating the group.
+// Materializes the derived plan into real transfers, closes the shares behind
+// it, and marks the group hardened. Reuses createSummary so the write-order
+// safety property (replacement first, freeze the originals last) lives in one
+// place. Returns the written transfer rows so the caller can settle the one
+// that was tapped.
+export async function freezeGroup({ ownerId, groupId, recordingId, plan }) {
+  const { summaryId, transfers } = await createSummary({ ownerId, recordingId, plan });
+  const { error } = await supabase.from("summary_groups")
+    .update({ frozen_at: new Date().toISOString(), freeze_event_id: summaryId })
+    .eq("id", groupId);
+  if (error) throw error;
+  return transfers;
+}
+
+// UNFREEZE — every settled transfer has been cleared, so the group goes back to
+// being a live plan. Mirrors freezeGroup: the debts come back first (inside
+// revertSummary), then the group is marked live again.
+export async function unfreezeGroup({ ownerId, groupId, recordingId, summaryId }) {
+  await revertSummary({ ownerId, summaryId, recordingId });
+  const { error } = await supabase.from("summary_groups")
+    .update({ frozen_at: null, freeze_event_id: null }).eq("id", groupId);
   if (error) throw error;
 }
 

@@ -64,6 +64,35 @@ create table recording_members (
   primary key (recording_id, person_id)
 );
 
+-- ── summary_groups (consolidation, as a thing you can see) ──────────────
+-- A group is a SET OF EXPENSES inside one record that you've decided to settle
+-- together. In the log it renders as one collapsible box: the summary (a few
+-- netted transfers) on top, the expenses it covers underneath.
+--
+-- 🔑 A GROUP IS LIVE UNTIL SOMEONE PAYS. While frozen_at is null no transfer
+-- rows exist at all — the plan is DERIVED from the group's open shares on every
+-- render, so editing an expense inside simply changes the plan. The moment a
+-- transfer is marked paid the group FREEZES: the plan is materialized into
+-- summary_transfers with pinned amounts, its shares are stamped closed, and its
+-- expenses become read-only.
+--
+-- That trigger is the whole design. A plan nobody has acted on is safe to
+-- recompute; the moment real money moves it has to stop moving. Freezing at
+-- creation instead (the first cut) meant adding one expense forced you to
+-- unwind the entire summary.
+--
+-- Unfreezing = clearing every settled transfer. Frozen groups are never added
+-- to: new expenses form a new group, which is what keeps this repeatable.
+create table summary_groups (
+  id             uuid primary key default gen_random_uuid(),
+  owner_id       uuid not null references profiles(id) on delete cascade,
+  recording_id   uuid not null references recordings(id) on delete cascade,
+  name           text,          -- editable; null = derive from the date range of its expenses
+  frozen_at      timestamptz,   -- null = live (transfers derived); set = hardened
+  freeze_event_id uuid,         -- → settlement_events(id); FK added below (declared later)
+  created_at     timestamptz default now()
+);
+
 -- ── expenses ────────────────────────────────────────────────────────────
 -- recording_id null = a loose (standalone) expense.
 create table expenses (
@@ -93,6 +122,10 @@ create table expenses (
   -- knowable in USD. Nothing old is ever converted between eras.
   home_currency text,
   archived_at   timestamptz,  -- loose expenses only: null = on Home; set = archived (Settlement → History). Deliberate act; settled ≠ archived.
+  -- Which summary group this expense belongs to (null = ungrouped). Membership
+  -- is by EXPENSE, not by share: a group is something you can see in the log,
+  -- so it has to survive an edit that rebuilds the expense's items.
+  summary_group_id uuid references summary_groups(id) on delete set null,
   created_at    timestamptz default now()
 );
 
@@ -133,6 +166,12 @@ create table settlement_events (
   note          text,
   created_at    timestamptz default now()
 );
+
+-- summary_groups was declared before expenses (which point at it), so its FK to
+-- the event log is added here, once settlement_events exists.
+alter table summary_groups
+  add constraint summary_groups_freeze_event_fk
+  foreign key (freeze_event_id) references settlement_events(id);
 
 -- who's in each item (+ per-person settled status).
 -- settled_at null = still open; set = that person's share of this item is paid.
@@ -178,7 +217,11 @@ create table summary_transfers (
   home_amount   numeric,
   home_currency text,               -- the era this transfer's home amount is in
   settled_at    timestamptz,
-  superseded_by uuid references settlement_events(id),  -- a LATER summary folded this unpaid transfer in
+  -- Kept from the pre-group model, where a later summary could fold in an
+  -- earlier one's unpaid transfers. Under the group model it is always null:
+  -- a frozen group is never added to, so nothing supersedes it. buildTransferAtoms
+  -- still honours it, which keeps any row written by the old flow correct.
+  superseded_by uuid references settlement_events(id),
   created_at    timestamptz default now()
 );
 
@@ -195,6 +238,9 @@ create index on settlement_events(recording_id);
 create index on summary_transfers(owner_id);
 create index on summary_transfers(recording_id);
 create index on summary_transfers(summary_id);
+create index on summary_groups(owner_id);
+create index on summary_groups(recording_id);
+create index on expenses(summary_group_id);
 
 -- ── auto-create profile + "self" person on signup ───────────────────────
 create or replace function handle_new_user()
@@ -228,6 +274,7 @@ alter table expense_items        enable row level security;
 alter table expense_item_members enable row level security;
 alter table settlement_events    enable row level security;
 alter table summary_transfers    enable row level security;
+alter table summary_groups       enable row level security;
 
 -- profiles: user sees/edits only their own row
 create policy "profiles_select" on profiles for select using (id = auth.uid());
@@ -243,3 +290,4 @@ create policy "owner_all" on expense_items        for all using (owner_id = auth
 create policy "owner_all" on expense_item_members for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owner_all" on settlement_events    for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owner_all" on summary_transfers    for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+create policy "owner_all" on summary_groups       for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());

@@ -23,6 +23,7 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
   const [items, setItems] = useState([]);
   const [membersByItem, setMembersByItem] = useState({});
   const [rec, setRec] = useState(null);
+  const [group, setGroup] = useState(null);   // the summary group this expense sits in, if any
   const [home, setHome] = useState("THB");
   const [loading, setLoading] = useState(true);
   const [confirmDel, setConfirmDel] = useState(false);
@@ -56,6 +57,10 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
       const { data: r } = await supabase.from("recordings").select("*").eq("id", e.recording_id).maybeSingle();
       setRec(r);
     }
+    if (e.summary_group_id) {
+      const { data: g } = await supabase.from("summary_groups").select("*").eq("id", e.summary_group_id).maybeSingle();
+      setGroup(g);
+    } else setGroup(null);
     const { data: its } = await supabase.from("expense_items").select("*").eq("expense_id", expenseId).order("is_rest", { ascending: false }).order("sort_order");
     const list = its || [];
     setItems(list);
@@ -111,6 +116,17 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
     return Object.entries(acc).map(([pid, v]) => ({ pid, ...v }));
   })();
 
+  // ── grouped / locked ─────────────────────────────────────────────────────
+  // GROUPED (live or frozen): the per-person settle boxes go away. Mathematically
+  // they'd be harmless while the group is live — the summary would just recompute
+  // — but two different ways to say "paid" for the same debt at the same time is
+  // exactly the ambiguity that made minimized transfers untappable in Phase 6.
+  // Rule: once grouped, the group is where you settle. Reading still works.
+  //
+  // LOCKED (the group has frozen, i.e. someone has paid against it): editing and
+  // deleting go too, because the transfers were computed from these numbers.
+  const grouped = !!group;
+  const locked = !!group?.frozen_at;
   const anySettled = perPerson.some((p) => p.settled);
   const fullySettled = perPerson.length === 0 || perPerson.every((p) => p.settled);
 
@@ -163,11 +179,17 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
       <div style={{ height: 54, flex: "none", display: "flex", alignItems: "center", padding: "0 12px", gap: 4 }}>
         <button onClick={() => onClose(dirty)} style={{ width: 40, height: 40, fontSize: 20, borderRadius: "50%" }}>←</button>
         <div style={{ flex: 1, textAlign: "center" }}><span className="legend">Expense</span></div>
-        <button onClick={() => onEdit(expenseId)} className="mono" style={{ ...iconBtn, width: "auto", padding: "0 12px", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text)" }}>Edit</button>
+        {/* a locked expense backs transfers someone has already paid against —
+            editing or deleting it would silently move what they owe */}
+        {!locked && (
+          <button onClick={() => onEdit(expenseId)} className="mono" style={{ ...iconBtn, width: "auto", padding: "0 12px", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text)" }}>Edit</button>
+        )}
         {!loading && exp && !exp.recording_id && (fullySettled || exp.archived_at) && (
           <button onClick={toggleArchive} disabled={busy} className="mono" style={{ ...iconBtn, width: "auto", padding: "0 12px", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: busy ? "var(--text-4)" : exp.archived_at ? "var(--accent)" : "var(--text-3)" }}>{exp.archived_at ? "Unarchive" : "Archive"}</button>
         )}
-        <button onClick={() => setConfirmDel(true)} style={{ ...iconBtn, color: "var(--text-3)", fontSize: 16 }}>🗑</button>
+        {!locked && (
+          <button onClick={() => setConfirmDel(true)} style={{ ...iconBtn, color: "var(--text-3)", fontSize: 16 }}>🗑</button>
+        )}
       </div>
 
       {loading || !exp ? (
@@ -210,6 +232,21 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
             <Meta label="When" value={<span className="mono" style={{ fontSize: 12.5 }}>{fullDate(exp.created_at)}</span>} />
             {rec && <Meta label="Recording" value={rec.name} />}
           </div>
+
+          {/* Grouped state — say it plainly, so the missing Edit / settle boxes
+              read as a rule rather than a bug. */}
+          {grouped && (
+            <div style={{ margin: "16px 24px 0", padding: "11px 14px", border: "1px solid var(--hairline)", borderRadius: 12, background: "var(--surface)" }}>
+              <div className="mono" style={{ fontSize: 9.5, letterSpacing: "0.1em", textTransform: "uppercase", color: locked ? "var(--text-4)" : "var(--open)" }}>
+                {locked ? "Locked" : "In a summary"}
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--text-2)", lineHeight: 1.55, marginTop: 5 }}>
+                {locked
+                  ? "Someone has paid against this summary, so this expense is fixed. Clear the paid transfers in the record to unlock it."
+                  : "This expense is part of a summary. Settle it there — the summary updates as you change things here."}
+              </div>
+            </div>
+          )}
 
           {/* split breakdown */}
           <div style={{ padding: "20px 24px 0" }}>
@@ -302,7 +339,9 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
             <div style={{ padding: "14px 24px 0" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                 <span className="legend">Who owes {nameOf(exp.paid_by)}</span>
-                <span className="mono" style={{ fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)" }}>tap to settle</span>
+                <span className="mono" style={{ fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)" }}>
+                  {grouped ? "settle in the group" : "tap to settle"}
+                </span>
               </div>
               {perPerson.map((pp) => {
                 const { pid, amount, settled } = pp;
@@ -310,11 +349,14 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
                 return (
                   <button
                     key={pid}
-                    onClick={() => togglePerson(pp)}
-                    disabled={busy}
-                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "11px 0", borderBottom: "1px solid var(--hairline-3)", textAlign: "left", cursor: "pointer", opacity: settled ? 0.55 : 1 }}
+                    onClick={() => { if (!grouped) togglePerson(pp); }}
+                    disabled={busy || grouped}
+                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "11px 0", borderBottom: "1px solid var(--hairline-3)", textAlign: "left", cursor: grouped ? "default" : "pointer", opacity: settled ? 0.55 : 1 }}
                   >
+                    {/* no checkbox at all once grouped — the group owns settling */}
+                    {!grouped && (
                     <span style={{ width: 24, height: 24, borderRadius: 7, border: settled ? "none" : "1.5px solid var(--hairline)", background: settled ? "var(--settled)" : "var(--bg)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, flex: "none" }}>{settled ? "✓" : ""}</span>
+                    )}
                     <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
                       <span style={{ fontSize: 14, textDecoration: settled ? "line-through" : "none" }}>{nameOf(pid)}</span>
                       <SettledPill settled={settled} />
