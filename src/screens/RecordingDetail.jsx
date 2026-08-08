@@ -68,10 +68,14 @@ function Chevron({ open }) {
 // Sofia open"), so leading with the payer keeps every name at the same
 // x-position down the list — which is what makes the column scannable for
 // "wait, who paid that?" without opening anything.
+//
+// Just the name, no "paid by" (Phoom, 2026-08-08): the position is consistent
+// enough to be learned once, and the label cost three words on every row of a
+// list whose whole job is being skimmable.
 function PaidBy({ name }) {
   return (
     <span className="mono" style={{ fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-3)", flex: "none" }}>
-      paid by {name}
+      {name}
     </span>
   );
 }
