@@ -649,16 +649,16 @@ The state it fixes: the table was live and already collecting `summary`/`summary
 
 ---
 
-## 10.7 🟡 UNIT 6 — NOTES + HOW-TO-PAY (built 2026-08-09, ⛔ **BLOCKED ON A MIGRATION — DO NOT PUSH YET**)
+## 10.7 ✅ UNIT 6 — NOTES + HOW-TO-PAY (commit `5550203`; migration RUN, pushed + deployed, Claude-verified live 2026-08-09)
 
-**Read this before touching the branch.** Commit `a4ec03a` is on `papaya-v2` **locally and deliberately NOT pushed**. Unlike every previous unit, its migration is **not** a provable no-op: the code writes columns that don't exist yet, so pushing it before the SQL runs would make **saving an expense and editing a person fail outright** on the live app. Confirmed live, not assumed — a save with the code in place returns `400` from PostgREST.
-
-**Run this first (Phoom, in the Supabase SQL editor), then push:**
+**Migration applied live by Phoom 2026-08-09** (verified by probe afterwards: `expenses.note` → 200, `people.payment_note` → 200, bogus control column → 400):
 ```sql
 alter table expenses add column if not exists note text;
 alter table people   add column if not exists payment_note text;
 ```
-Both are purely additive, null for every existing row, and read by nothing in the money core — so they move no balance. `schema.sql` already carries them.
+Both purely additive, null for every existing row, read by nothing in the money core — they move no balance. `schema.sql` carries them.
+
+**⚠️ THE ORDERING LESSON, worth remembering because this was the FIRST exception in the project.** Every earlier migration (era, `service_charge`, summaries) was a **provable no-op**, so the code was safe to deploy *before* the SQL. This one was not: the code writes the new columns, so shipping it early made saving an expense return `400` — confirmed live, not assumed. The commit was therefore held back until the SQL had run. **Don't pattern-match "migrations here are safe to deploy early" — check whether the new code WRITES the column.**
 
 **6a — a note on an expense** (his 2.6). A `Note` row in `ExpenseForm` directly under `Title`, and a wrapped, full-width `Note` block on `ExpenseDetail` between the meta rows and "Made up of". Answers "what was this ฿400 for?" months later. Kept as an inline row rather than a textarea so the form keeps its dense rhythm; long notes truncate in the form and read in full on the detail. **⚠️ `ExpenseForm` already had a `note` state — a transient alert message.** The expense's own note is therefore `expenseNote`; don't conflate them. It's in the dirty-check signature, so typing a note and backing out prompts the discard confirm.
 
@@ -669,4 +669,12 @@ Both are purely additive, null for every existing row, and read by nothing in th
 ### 🔴 Bug found and fixed on the way (`ExpenseForm.save()` had NO error handling)
 Tripped over while testing the above: the 400 threw straight out of the promise, so `saving` was never cleared and **Save simply went dead with nothing on screen**. Pre-existing, and it matters in real use — §2b already records that there is no offline support, so *any* lost-signal save hit this. Now the body is wrapped in `try/catch`, the insert's `error`/null result is checked explicitly, and a failure surfaces through the form's existing alert: *"Couldn't save this expense. Check your connection and try again — nothing you typed has been lost."* The form keeps everything typed and Save can be pressed again. **Verified live** using the missing column as a guaranteed failure — a happy accident of the blocked migration.
 
-This fix needs no migration and is independently valuable, but it shares `ExpenseForm.jsx` with 6a, so it is **in the same unpushed commit**. Splitting it out would have meant a hand-rolled partial-stage on a production branch with Phoom away — not worth the risk for a few hours.
+This fix needs no migration and is independently valuable, but it shares `ExpenseForm.jsx` with 6a, so it rode in the same commit.
+
+### ✅ Live-verified after the migration (2026-08-09, isolated anonymous guest, `is_anonymous` checked first)
+The round-trip that couldn't be tested before the SQL ran, now confirmed end to end:
+- **6a** — logged a ₩45,000 expense with the note *"Ana's birthday — she covered the tip separately"*; it persisted and renders as a wrapped `NOTE` block on the expense detail, between `Recording` and `MADE UP OF`.
+- **6b** — set Rui's details to `SCB 123-4-56789 · PromptPay 081-234-5678` in the edit sheet ("HOW TO PAY RUI"); they persist and show on `PersonDetail`.
+- **The conditional was verified in BOTH directions**, which is the part that mattered: while Rui *owed* me, his settle sheet showed **no** pay panel; after settling his five debts so only the KTX ticket he paid for remained, his card flipped to `YOU OWE ฿1,022.67` and the sheet grew a **`PAY RUI`** panel. Ticking that last row (`settles up fully`) **left the panel in place** — the specific reason it keys off the whole balance rather than `remaining`.
+
+**Harness note (not an app bug):** `computer{screenshot}` returned a **stale frame** once — six rows and a pre-settle total — while `innerText` read from the same moment showed the correct post-settle state. A second screenshot matched. Trust the DOM read over a single screenshot, and re-shoot before judging anything visual.
