@@ -678,3 +678,48 @@ The round-trip that couldn't be tested before the SQL ran, now confirmed end to 
 - **The conditional was verified in BOTH directions**, which is the part that mattered: while Rui *owed* me, his settle sheet showed **no** pay panel; after settling his five debts so only the KTX ticket he paid for remained, his card flipped to `YOU OWE ฿1,022.67` and the sheet grew a **`PAY RUI`** panel. Ticking that last row (`settles up fully`) **left the panel in place** — the specific reason it keys off the whole balance rather than `remaining`.
 
 **Harness note (not an app bug):** `computer{screenshot}` returned a **stale frame** once — six rows and a pre-settle total — while `innerText` read from the same moment showed the correct post-settle state. A second screenshot matched. Trust the DOM read over a single screenshot, and re-shoot before judging anything visual.
+
+---
+
+## 11. 🔴 PLAN CHANGE — MULTI-USER FIRST (Phoom, 2026-08-09)
+
+**Phoom's call, and it's the right one:** *"these functions we are making are for multi people usable… I think it better to make the app multi people where people can add each other and invite into record/expense for real first. then we can come back to these functions."*
+
+**This parks unit 6's photo half (QR + payment evidence) and re-prioritises §10's remaining backlog.** The reasoning is sound: notes, bank details, payment evidence — and arguably much of the summary flow — are *collaboration* features. Single-user they are a private notebook; multi-user they are the product. Building more of them on a single-user foundation is polishing something only one person can see.
+
+### 11.1 ⚠️ Scope reality — this is the biggest change since v2 began. Do NOT start it as a unit.
+It needs its own **design session, spent on decisions rather than code, ideally FRESH** (this session is heavy with 5d/unit-6 detail). Three specific problems, all real, none improvised around:
+
+1. **🔴🔴 RLS IS THE TRAP, AND IT IS THE EXACT THING THAT KILLED v1.** Every table today is a flat, non-recursive `owner_id = auth.uid()`. Multi-user needs *"you may read this record because you are a MEMBER of it"* — a **cross-table lookup inside a policy**, which §5 of this file explicitly forbids ("never reintroduce cross-table policy lookups"). That prohibition exists because recursive RLS is the bug that took v1 down. It is solvable — the standard answer is a `security definer` helper function so the policy calls a function instead of recursing into a policied table — **but it must be designed and tested deliberately, not discovered mid-feature.** Treat any RLS change here as the highest-risk work in the project.
+2. **Identity does not cross accounts.** Each user's `people` rows are private to them: "Rui" in Phoom's account and Rui's own profile are different rows in different owners' data. Sharing requires a **claim/link** flow. The schema anticipated this (`people.linked_profile_id`, `people.merged_into_id`) and the alias-merge machinery ([[papaya-alias-merge]]) is a genuine head start, but **nothing implements cross-account claiming today.** This is also the part users actually feel — it IS the invite flow.
+3. **Permissions are undecided, and that's a product question.** In a shared record: who may edit someone else's expense? delete it? **freeze a summary, which moves everyone's money at once?** Today `owner_id` answers all of it silently. Multi-user has to answer it out loud. Phoom decides this, not the code.
+
+Plus: it lands on a **live database in real use** (§2b), so the migration path itself needs a plan.
+
+**Open questions for the design session (Phoom's answers needed before any code):** invite mechanism (link? email? code?) · what a guest/invitee can see of a record's *other* expenses · permissions per the above · what happens to the records that already exist · whether balances stay derived per-viewer or become shared.
+
+### 11.2 ✅ DO THIS FIRST — GUESTS vs MEMBERS in a record (Phoom, 2026-08-09)
+Small, self-contained, **independent of multi-user — and materially cheaper to do BEFORE it**, because roster semantics get much more expensive to change once a record is shared between several people.
+
+**The bug, in Phoom's words:** *"after i add outside people into record, they come in who's in of the record too. the outside may only come for 1 or 2 expenses… so they shouldn't persist in who's in."*
+
+**The design he specified:** a record has two tiers. **Who's in** = real members. **Guests** = people who arrived via a single expense. A guest stays a guest until deliberately promoted. **Guests are never auto-suggested for new expenses.**
+
+**Where it actually breaks today —** `ExpenseForm.jsx:506` upserts every expense participant into `recording_members`, and **four** places then read that roster back, three of which push the person at you again:
+- `ExpenseForm.jsx:133/189` — pre-fills the split + drives the "In this recording" grouping in `PeoplePicker`
+- `ExpenseForm.jsx:425` `setTargetAll` — the **"Everyone"** chip
+- `lib/suggestions.js:14` — the **"From last time" / "Often"** chips
+- `RecordingDetail.jsx:198` — the Who's-in roster display
+
+So a one-night guest currently gets re-proposed by three separate affordances. Fixing only the display would miss the actual complaint.
+
+**Proposed shape (for Phoom to confirm):**
+- **Migration:** `alter table recording_members add column if not exists is_guest boolean not null default false;` — existing rows default to `false`, i.e. everyone currently in a roster stays a full member and **today's behaviour is preserved exactly**. ⚠️ **The new code WRITES this column, so per §10.7's lesson the SQL must run BEFORE the push.**
+- **Writes:** only `ExpenseForm`'s auto-add sets `is_guest: true`. People added deliberately in `CreateRecording` (create or edit) are members. **An existing member must never be downgraded** — the insert only covers ids not already in the roster, and the upsert's `onConflict` must not overwrite `is_guest`.
+- **Reads:** the three suggestion/pre-fill sites use **members only**. Guests fall through to "Everyone else" in the picker — still one tap away, never hidden, just not proposed. (Deliberate: the "friend joins for one dinner" case must keep working.)
+- **Display:** `RecordingDetail` grows a quieter **Guests** section under Who's in, with a promote action ("Move to Who's in").
+- **Not a money change.** `is_guest` is organizational, exactly like `archived_at` — it must not reach `balances-core.mjs` and `npm test` must stay 154/154.
+
+**Deliberately left for Phoom to decide:** whether a guest can be demoted back, and whether promoting is a tap on the guest row or a mode.
+
+**Routing:** 🟠 Hard (multi-file: ExpenseForm, RecordingDetail, CreateRecording, suggestions.js, PeoplePicker) but well-specified → GLM 5.2 in opencode, or Claude Code if Phoom would rather it be verified in-browser in one pass.
