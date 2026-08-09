@@ -52,6 +52,35 @@ function Face({ p }) {
   );
 }
 
+// One person in the record's roster. A guest wears a dashed ring rather than
+// being faded — faded means "settled" everywhere else in this app, and a guest
+// is neither settled nor lesser, just not a member yet.
+function RosterFace({ person: p, guest, fixed, caption, nudge, onClick }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, width: 56, cursor: onClick ? "pointer" : "default" }}
+    >
+      <span style={{
+        width: 40, height: 40, borderRadius: "50%",
+        background: p?.avatar_color || "var(--knob-off)",
+        display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18,
+        border: guest ? "1.5px dashed var(--hairline)" : "1.5px solid transparent",
+        boxSizing: "content-box", marginTop: guest ? -1.5 : 0,
+        opacity: fixed ? 0.9 : 1,
+      }}>{p?.avatar_emoji || "🙂"}</span>
+      <span style={{ fontSize: 11, color: "var(--text-2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 56 }}>
+        {p?.is_self ? "You" : p?.display_name || "—"}
+      </span>
+      {caption && (
+        <span className="mono" style={{ fontSize: 8.5, letterSpacing: "0.05em", textTransform: "uppercase", color: nudge ? "var(--open)" : "var(--text-4)", whiteSpace: "nowrap" }}>
+          {caption}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function Chevron({ open }) {
   return (
     <span className="mono" style={{ fontSize: 10, color: "var(--text-4)", transform: open ? "rotate(180deg)" : "none", transition: "transform 140ms var(--ease)", display: "inline-block" }}>⌄</span>
@@ -151,6 +180,10 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
   const [groups, setGroups] = useState([]);
   const [contribs, setContribs] = useState([]);
   const [memberIds, setMemberIds] = useState([]);
+  // everyone who actually appears in this record's expenses → how many they're in.
+  // A GUEST is simply someone in here who has no recording_members row: guest-ness
+  // is derived, never stored, so promoting is one insert and demoting is one delete.
+  const [participation, setParticipation] = useState({});
   const [home, setHome] = useState("THB");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -212,6 +245,17 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
     }));
     setHome(hc);
     setRec(recRes.data);
+    // who actually turns up in this record, and in how many expenses. Counts the
+    // payer too — paying for dinner is being there, even if you owe nothing.
+    const seen = {}; // pid -> Set of expense ids
+    const mark = (pid, eid) => {
+      if (!pid || !eid) return;
+      const id = resolveAlias(pid, aliasMap);
+      (seen[id] = seen[id] || new Set()).add(eid);
+    };
+    (data.members || []).forEach((m) => mark(m.person_id, itemToExp[m.item_id]));
+    (data.expenses || []).forEach((e) => mark(e.paid_by, e.id));
+    setParticipation(Object.fromEntries(Object.entries(seen).map(([k, v]) => [k, v.size])));
     setMemberIds([...new Set((rmRes.data || []).map((x) => resolveAlias(x.person_id, aliasMap)))]);
     setLogs(expList);
     setGroups(grps);
@@ -432,6 +476,32 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
   })();
 
   const roster = memberIds.length ? memberIds : [];
+  // ── guests ───────────────────────────────────────────────────────────────
+  // Someone who came for an expense or two but was never added to the record.
+  // Derived, not stored: guest = participates here AND has no membership row.
+  // That's why the suggestion paths need no changes at all — "Everyone", the
+  // split pre-fill and suggestions.js all read recording_members, so a guest is
+  // never proposed for a new expense, but still sits one tap away in the
+  // picker's "Everyone else" group.
+  const GUEST_NUDGE_AT = 3; // in this many expenses, they're not really a guest
+  const guestIds = Object.keys(participation)
+    .filter((id) => !memberIds.includes(id))
+    .sort((a, b) => (participation[b] || 0) - (participation[a] || 0));
+
+  // Moving between the two is a plain tap, no confirm: the person visibly moves
+  // between two labelled sections and tapping them there puts them back. Same
+  // toggle-in-place reasoning as settling and the REC switch.
+  function moveRoster(pid, toMember) {
+    if (!rec) return;
+    setMemberIds((ids) => (toMember ? [...new Set([...ids, pid])] : ids.filter((x) => x !== pid)));
+    background(async () => {
+      const q = toMember
+        ? supabase.from("recording_members").insert({ recording_id: rec.id, person_id: pid, owner_id: ownerId })
+        : supabase.from("recording_members").delete().eq("recording_id", rec.id).eq("person_id", pid);
+      const { error } = await q;
+      if (error) throw error;
+    });
+  }
   // A record is settleable-away when nothing is left owing: every ungrouped
   // expense settled AND every group's transfers paid.
   const allSettled =
@@ -482,20 +552,48 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
         </div>
 
         {/* party roster — hidden in check-mode, which is about the money */}
-        {!checkMode && roster.length > 0 && (
+        {!checkMode && (roster.length > 0 || guestIds.length > 0) && (
           <div style={{ padding: "0 24px 20px" }}>
-            <div className="legend" style={{ marginBottom: 10 }}>Who's in</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
-              {roster.map((id) => {
-                const p = (people || []).find((x) => x.id === id);
-                return (
-                  <div key={id} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, width: 52 }}>
-                    <span style={{ width: 40, height: 40, borderRadius: "50%", background: p?.avatar_color || "var(--knob-off)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>{p?.avatar_emoji || "🙂"}</span>
-                    <span style={{ fontSize: 11, color: "var(--text-2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 52 }}>{p?.is_self ? "You" : p?.display_name || "—"}</span>
-                  </div>
-                );
-              })}
-            </div>
+            {roster.length > 0 && (
+              <>
+                <div className="legend" style={{ marginBottom: 10 }}>Who's in</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
+                  {roster.map((id) => {
+                    const p = person(id);
+                    // you are always in your own record
+                    const fixed = !!p?.is_self;
+                    return (
+                      <RosterFace
+                        key={id} person={p} fixed={fixed}
+                        onClick={fixed ? undefined : () => moveRoster(id, false)}
+                      />
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {guestIds.length > 0 && (
+              <div style={{ marginTop: roster.length > 0 ? 18 : 0 }}>
+                <div className="legend" style={{ marginBottom: 4 }}>Guests</div>
+                <div className="mono" style={{ fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-4)", marginBottom: 10 }}>
+                  joined through an expense · tap to add to who’s in
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
+                  {guestIds.map((id) => {
+                    const n = participation[id] || 0;
+                    return (
+                      <RosterFace
+                        key={id} person={person(id)} guest
+                        caption={`${n} expense${n === 1 ? "" : "s"}`}
+                        nudge={n >= GUEST_NUDGE_AT}
+                        onClick={() => moveRoster(id, true)}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

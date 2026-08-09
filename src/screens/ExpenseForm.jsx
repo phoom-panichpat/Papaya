@@ -477,7 +477,6 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
       if (error || !data) throw error || new Error("expense insert returned nothing");
       exp = data;
     }
-    const participants = new Set();
     async function insertItem(label, amt, isRest, memberSet) {
       const { data: it } = await supabase
         .from("expense_items")
@@ -486,7 +485,6 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
         .single();
       const ids = [...memberSet];
       if (ids.length) await supabase.from("expense_item_members").insert(ids.map((pid) => ({ item_id: it.id, person_id: pid, owner_id })));
-      ids.forEach((id) => participants.add(id));
     }
 
     if (sliced) {
@@ -500,15 +498,18 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
       await insertItem(null, total, true, splitIds);
     }
 
-    if (recording && participants.size) {
-      const toAdd = [...participants].filter((id) => !members.includes(id));
-      if (toAdd.length) {
-        await supabase.from("recording_members").upsert(
-          toAdd.map((pid) => ({ recording_id: recording.id, person_id: pid, owner_id })),
-          { onConflict: "recording_id,person_id" }
-        );
-      }
-    }
+    // ⚠️ DELIBERATELY NOT adding participants to recording_members any more.
+    // Joining one expense used to make you a permanent member of the record, so
+    // someone who came to a single dinner was proposed for every later expense
+    // by three separate affordances (the "Everyone" chip, the split pre-fill,
+    // and suggestions.js's "From last time"/"Often" chips).
+    //
+    // A record's roster is now DELIBERATE: you're a member if you were added in
+    // the record itself, and a GUEST — derived, never stored — if you only turn
+    // up in its expenses. RecordingDetail shows guests in their own section and
+    // promotes one with a tap. Because guest-ness is the ABSENCE of a
+    // recording_members row, every suggestion path stays correct with no change:
+    // they all read that table already. See CLAUDE.md §11.2.
     setSaving(false);
     onClose(true);
     } catch (e) {

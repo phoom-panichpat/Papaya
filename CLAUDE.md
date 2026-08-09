@@ -698,31 +698,30 @@ Plus: it lands on a **live database in real use** (§2b), so the migration path 
 
 **Open questions for the design session (Phoom's answers needed before any code):** invite mechanism (link? email? code?) · what a guest/invitee can see of a record's *other* expenses · permissions per the above · what happens to the records that already exist · whether balances stay derived per-viewer or become shared.
 
-### 11.2 ✅ DO THIS FIRST — GUESTS vs MEMBERS in a record (Phoom, 2026-08-09)
-Small, self-contained, **independent of multi-user — and materially cheaper to do BEFORE it**, because roster semantics get much more expensive to change once a record is shared between several people.
+### 11.2 ✅ GUESTS vs MEMBERS — BUILT + LIVE-VERIFIED (2026-08-09, Claude Code/Opus 5; `npm test` 154/154 untouched, build clean, **NO MIGRATION**)
 
-**The bug, in Phoom's words:** *"after i add outside people into record, they come in who's in of the record too. the outside may only come for 1 or 2 expenses… so they shouldn't persist in who's in."*
+Phoom's bug: *"after i add outside people into record, they come in who's in of the record too. the outside may only come for 1 or 2 expenses in the record and never come back, so they shouldn't persist in who's in."* His rule: **created/invited in the RECORD → member; created/invited in an EXPENSE → guest**, and guests are never auto-suggested.
 
-**The design he specified:** a record has two tiers. **Who's in** = real members. **Guests** = people who arrived via a single expense. A guest stays a guest until deliberately promoted. **Guests are never auto-suggested for new expenses.**
+**🔑 THE MODEL — guest-ness is DERIVED, never stored. This is the whole unit.**
+> **member = has a `recording_members` row. guest = appears in one of the record's expenses and has NO row.**
 
-**Where it actually breaks today —** `ExpenseForm.jsx:506` upserts every expense participant into `recording_members`, and **four** places then read that roster back, three of which push the person at you again:
-- `ExpenseForm.jsx:133/189` — pre-fills the split + drives the "In this recording" grouping in `PeoplePicker`
-- `ExpenseForm.jsx:425` `setTargetAll` — the **"Everyone"** chip
-- `lib/suggestions.js:14` — the **"From last time" / "Often"** chips
-- `RecordingDetail.jsx:198` — the Who's-in roster display
+Phoom asked whether to design this single-user or multi-user-aware, and thinking it through his way is what produced the model: *what does a guest see?* Papaya already has the right primitive — **a loose expense**. The record is the owner's container and means nothing to someone who came to one dinner, so a guest sees **the expense, not the record**. Rule: *a record belongs to its members; a guest is attached to specific expenses.* Under multi-user that same distinction becomes the visibility rule (row ⇒ sees the record; no row ⇒ sees only their own expenses, plus any summary transfer that names them, or their balance would move silently). **So the single-user and multi-user answers are the same model — no choice had to be made.**
 
-So a one-night guest currently gets re-proposed by three separate affordances. Fixing only the display would miss the actual complaint.
+**An earlier draft of this section specced `recording_members.is_guest`. That was wrong and is deleted.** If a guest isn't *in* the record they shouldn't have a membership row at all. Dropping the column removed the migration, the push-ordering hazard, and most of the code.
 
-**Proposed shape (for Phoom to confirm):**
-- **Migration:** `alter table recording_members add column if not exists is_guest boolean not null default false;` — existing rows default to `false`, i.e. everyone currently in a roster stays a full member and **today's behaviour is preserved exactly**. ⚠️ **The new code WRITES this column, so per §10.7's lesson the SQL must run BEFORE the push.**
-- **Writes:** only `ExpenseForm`'s auto-add sets `is_guest: true`. People added deliberately in `CreateRecording` (create or edit) are members. **An existing member must never be downgraded** — the insert only covers ids not already in the roster, and the upsert's `onConflict` must not overwrite `is_guest`.
-- **Reads:** the three suggestion/pre-fill sites use **members only**. Guests fall through to "Everyone else" in the picker — still one tap away, never hidden, just not proposed. (Deliberate: the "friend joins for one dinner" case must keep working.)
-- **Display:** `RecordingDetail` grows a quieter **Guests** section under Who's in, with a promote action ("Move to Who's in").
-- **Not a money change.** `is_guest` is organizational, exactly like `archived_at` — it must not reach `balances-core.mjs` and `npm test` must stay 154/154.
+**What changed (2 files):**
+- **`ExpenseForm.save()`** — the auto-`upsert` of participants into `recording_members` is **gone** (and its now-dead `participants` Set with it). That single write was the entire bug.
+- **`RecordingDetail`** — derives `participation` (`pid → how many of this record's expenses they're in`, counting **payers** too: paying for dinner is being there even if you owe nothing) inside the existing load, from data `loadSettlementData(recordingId)` already returns, so **no new queries**. `guestIds` = participants − members. New module-scope `RosterFace` renders both sections.
 
-**Deliberately left for Phoom to decide:** whether a guest can be demoted back, and whether promoting is a tap on the guest row or a mode.
+**🔑 The three suggestion paths needed NO changes, which is the sign the model is right.** The "Everyone" chip, the split pre-fill/"In this recording" grouping, and `suggestions.js`'s "From last time"/"Often" chips all read `recording_members` already — so a guest is automatically never proposed, while still sitting one tap away in the picker's "Everyone else" (the friend-joins-for-one-dinner case keeps working).
 
-**Routing:** 🟠 Hard (multi-file: ExpenseForm, RecordingDetail, CreateRecording, suggestions.js, PeoplePicker) but well-specified → GLM 5.2 in opencode, or Claude Code if Phoom would rather it be verified in-browser in one pass.
+**Phoom's four decisions (all as recommended):** guests **do** appear in settle-up and summaries — guest status is roster-only and never touches money · **promote and demote**, both by tapping the person (no confirm: they visibly move between two labelled sections and tapping them back reverses it — the same toggle-in-place reasoning as settling and the REC switch) · a **quiet nudge** once a guest is in ≥3 expenses · **existing records are left alone** (past guests are already members and are indistinguishable retroactively; demote them by hand).
+
+**Details worth keeping:** **self can never be demoted** — you are always in your own record. A guest wears a **dashed ring** rather than being faded, because faded means *settled* everywhere else in this app and a guest is neither settled nor lesser. Writes are optimistic through the existing `background()` chain, so a failed one re-syncs and raises `SaveError`. Editing a record's roster in `CreateRecording` now cleanly can't disturb guests, since they aren't in the table it diffs.
+
+**Live-verified** (isolated anonymous guest, `is_anonymous` checked first): added Marco — an outsider — to one expense in a 3-member record → he appeared under **GUESTS · 1 EXPENSE**, not in Who's in · the next expense's split pre-filled **3 people, not 4**, and the picker listed him under "Everyone else" · he still showed in the settle plan as **Marco → You ₩10,000** · tap promoted him into Who's in, tap demoted him back · tapping **You** did nothing · state survived a reload · at 3 expenses the count turned ochre. No console errors.
+
+**⚠️ Judgement call Phoom may want to revisit:** the nudge is *only* the count turning ochre (`--open`) — quieter than the "in 4 expenses — add to Who's in?" wording the option described. Done that way because the section caption already says "tap to add to who's in", and per-guest prompt text would shout on a screen whose one accent is meant to be Settle up. One-line change if he wants it louder.
 
 ---
 
