@@ -646,3 +646,27 @@ The state it fixes: the table was live and already collecting `summary`/`summary
 **Claude-verified live** (isolated anonymous guest — `is_anonymous` checked on the token first, per [[papaya-guest-verification]]; seeded demo data): settle from the person sheet → `SETTLED · 1 share · Airport taxi` appears immediately, no reload · un-settle from the Settled sheet with note "wrong person" → `REOPENED` carries the note **and the settle it reversed is still in the log** (Settled count drops to 00, Activity keeps both — exactly the July complaint, fixed) · per-person toggle in an expense detail → `SETTLED`, no note · summary freeze then unfreeze on *Seoul in June* → `SUMMARY · 6 shares · Seoul in June` then `SUMMARY REVERTED · Seoul in June` · **balances untouched throughout** (฿2,782 = 1,308.67 + 1,022.67 + 450.67 — the summary-equals-sum-of-cards diagnostic that caught the C2 corruption) · no console errors.
 
 **Not built, deliberately:** `settle_shares` events carry no `recording_id`, so Activity can't yet be filtered to one record. Trivially addable if Phoom wants it; unasked-for today.
+
+---
+
+## 10.7 🟡 UNIT 6 — NOTES + HOW-TO-PAY (built 2026-08-09, ⛔ **BLOCKED ON A MIGRATION — DO NOT PUSH YET**)
+
+**Read this before touching the branch.** Commit `a4ec03a` is on `papaya-v2` **locally and deliberately NOT pushed**. Unlike every previous unit, its migration is **not** a provable no-op: the code writes columns that don't exist yet, so pushing it before the SQL runs would make **saving an expense and editing a person fail outright** on the live app. Confirmed live, not assumed — a save with the code in place returns `400` from PostgREST.
+
+**Run this first (Phoom, in the Supabase SQL editor), then push:**
+```sql
+alter table expenses add column if not exists note text;
+alter table people   add column if not exists payment_note text;
+```
+Both are purely additive, null for every existing row, and read by nothing in the money core — so they move no balance. `schema.sql` already carries them.
+
+**6a — a note on an expense** (his 2.6). A `Note` row in `ExpenseForm` directly under `Title`, and a wrapped, full-width `Note` block on `ExpenseDetail` between the meta rows and "Made up of". Answers "what was this ฿400 for?" months later. Kept as an inline row rather than a textarea so the form keeps its dense rhythm; long notes truncate in the form and read in full on the detail. **⚠️ `ExpenseForm` already had a `note` state — a transient alert message.** The expense's own note is therefore `expenseNote`; don't conflate them. It's in the dirty-check signature, so typing a note and backing out prompts the discard confirm.
+
+**6b — how to pay a person** (his 2.7, text half). `people.payment_note` — free text for an account number or PromptPay id. **Deliberately on the PERSON, not the expense**, per the standing critique: otherwise you re-enter Rui's details every time he pays for something. Edited in the shared `EditSheet` (so it reaches People **and** PersonDetail, including self), **hidden in the "Add person" flow** so adding stays one name and one tap. Displayed in `PersonDetail`, and — the part that earns it — in the **Settlement person sheet at the moment of need**, shown only when the balance runs your way. That panel keys off the whole balance, **not** `remaining`, or ticking everything would hide the details exactly as you go to pay. Both display sites are `user-select: text`, since the entire point is copying it into a banking app.
+
+**⚠️ Not built — 6c, the photo half** (QR image, payment evidence). **Supabase Storage is not provisioned** and cannot be from here: creating a bucket needs dashboard/service-role access, and the repo holds only the anon key. Building upload code blind, against a bucket that doesn't exist, on an app in real use, was not worth it. See the handoff for the setup block and the design when Phoom wants it.
+
+### 🔴 Bug found and fixed on the way (`ExpenseForm.save()` had NO error handling)
+Tripped over while testing the above: the 400 threw straight out of the promise, so `saving` was never cleared and **Save simply went dead with nothing on screen**. Pre-existing, and it matters in real use — §2b already records that there is no offline support, so *any* lost-signal save hit this. Now the body is wrapped in `try/catch`, the insert's `error`/null result is checked explicitly, and a failure surfaces through the form's existing alert: *"Couldn't save this expense. Check your connection and try again — nothing you typed has been lost."* The form keeps everything typed and Save can be pressed again. **Verified live** using the missing column as a guaranteed failure — a happy accident of the blocked migration.
+
+This fix needs no migration and is independently valuable, but it shares `ExpenseForm.jsx` with 6a, so it is **in the same unpushed commit**. Splitting it out would have meant a hand-rolled partial-stage on a production branch with Phoom away — not worth the risk for a few hours.

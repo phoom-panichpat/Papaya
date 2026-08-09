@@ -32,6 +32,10 @@ create table people (
   is_self           boolean not null default false,
   linked_profile_id uuid references profiles(id),
   merged_into_id    uuid references people(id),  -- non-destructive alias: this person IS that person (token→account merge); balances resolve through it, un-merge = null
+  -- How to pay this person: an account number, a PromptPay id, whatever they
+  -- actually give people. On the PERSON and not on an expense, so you enter it
+  -- once instead of every time they pay for something. Display only.
+  payment_note      text,
   created_at        timestamptz default now()
 );
 
@@ -101,6 +105,7 @@ create table expenses (
   recording_id  uuid references recordings(id) on delete set null,
   paid_by       uuid not null references people(id),
   title         text not null,
+  note          text,     -- free text: "what was this ฿400 for?", answered months later
   total_amount  numeric not null,  -- the SUBTOTAL: what the items add up to (excludes service_charge)
   -- Service charge / VAT / any extra fee, in this expense's own currency.
   -- Kept OUT of total_amount and out of item amounts so it stays a visible,

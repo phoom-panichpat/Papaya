@@ -223,6 +223,7 @@ export function MergeConfirmSheet({ candidates, autoTarget, totalCount, busy, on
 export function EditSheet({ title, person, refCount = 0, onSave, onRemove, onClose }) {
   const [name, setName] = useState(person?.display_name || "");
   const [emoji, setEmoji] = useState(person?.avatar_emoji || "🙂");
+  const [payTo, setPayTo] = useState(person?.payment_note || "");
   const [confirmRemove, setConfirmRemove] = useState(false);
   const canSave = name.trim().length > 0;
 
@@ -248,7 +249,24 @@ export function EditSheet({ title, person, refCount = 0, onSave, onRemove, onClo
           ))}
         </div>
 
-        <button onClick={() => canSave && onSave(name.trim(), emoji)} disabled={!canSave} style={{ width: "100%", height: 48, borderRadius: 14, background: "var(--accent)", color: "#fff", fontSize: 15, fontWeight: 600, opacity: canSave ? 1 : 0.4 }}>Save</button>
+        {/* How to pay them — an account number, a PromptPay id, whatever they
+            actually send people. Lives on the PERSON, not on an expense: you'd
+            otherwise re-enter Rui's details every time he pays for something.
+            Hidden while ADDING (that flow should stay one name and one tap);
+            it's here on edit, where you're already looking at the person. */}
+        {person && (
+          <>
+            <div className="legend" style={{ marginBottom: 8 }}>How to pay {person.is_self ? "you" : person.display_name}</div>
+            <input
+              value={payTo}
+              onChange={(e) => setPayTo(e.target.value)}
+              placeholder="account or PromptPay — optional"
+              style={{ width: "100%", height: 44, background: "var(--bg)", border: "1px solid var(--hairline)", borderRadius: 12, fontSize: 15, outline: "none", padding: "0 14px", marginBottom: 18 }}
+            />
+          </>
+        )}
+
+        <button onClick={() => canSave && onSave(name.trim(), emoji, payTo.trim() || null)} disabled={!canSave} style={{ width: "100%", height: 48, borderRadius: 14, background: "var(--accent)", color: "#fff", fontSize: 15, fontWeight: 600, opacity: canSave ? 1 : 0.4 }}>Save</button>
 
         {onRemove && (
           confirmRemove ? (

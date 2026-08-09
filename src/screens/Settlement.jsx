@@ -567,6 +567,17 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
           </div>
         </div>
 
+        {/* How to pay them, at the moment you'd want it — only when the balance
+            runs YOUR way. If they owe you, their account number is just noise. */}
+        {/* keyed off the WHOLE balance, not `remaining` — otherwise ticking
+            everything would hide the details right as you go to pay */}
+        {other?.payment_note && signedByEra(shares).some((e) => e.net < 0) && (
+          <div style={{ margin: "10px 0 2px", padding: "10px 13px", background: "var(--bg)", border: "1px solid var(--hairline)", borderRadius: 12 }}>
+            <div className="mono" style={{ fontSize: 9.5, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-3)", marginBottom: 4 }}>Pay {other.display_name}</div>
+            <div style={{ fontSize: 14, color: "var(--text-2)", userSelect: "text", whiteSpace: "pre-wrap" }}>{other.payment_note}</div>
+          </div>
+        )}
+
         {shares.length === 0 ? (
           <div style={{ padding: "30px 0", textAlign: "center", color: "var(--text-3)", fontSize: 14 }}>Nothing outstanding.</div>
         ) : (

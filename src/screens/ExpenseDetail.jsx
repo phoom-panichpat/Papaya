@@ -233,6 +233,14 @@ export default function ExpenseDetail({ expenseId, people, onClose, onEdit, onAr
             {rec && <Meta label="Recording" value={rec.name} />}
           </div>
 
+          {/* note — free text, so it gets room to wrap instead of a Meta row */}
+          {exp.note && (
+            <div style={{ padding: "16px 24px 0" }}>
+              <div className="legend" style={{ marginBottom: 7 }}>Note</div>
+              <div style={{ fontSize: 14.5, lineHeight: 1.55, color: "var(--text-2)", whiteSpace: "pre-wrap" }}>{exp.note}</div>
+            </div>
+          )}
+
           {/* Grouped state — say it plainly, so the missing Edit / settle boxes
               read as a rule rather than a bug. */}
           {grouped && (

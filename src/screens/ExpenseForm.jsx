@@ -79,6 +79,10 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   const [ts] = useState(nowTitle());
   const [title, setTitle] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
+  // the expense's own note. (`note` further down is a transient alert message —
+  // different thing, hence the longer name here.)
+  const [expenseNote, setExpenseNote] = useState("");
+  const [editingNote, setEditingNote] = useState(false);
   const [paidBy, setPaidBy] = useState(null);
   const [splitIds, setSplitIds] = useState(new Set());
   const [recording, setRecording] = useState(null);
@@ -146,6 +150,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
           setCurrency(editCur);
           setAmount(String(e.total_amount ?? "0"));
           setTitle(e.title || "");
+          setExpenseNote(e.note || "");
           // the fee is stored as an AMOUNT; the form edits a percentage, so
           // derive it back from what the subtotal was when it was saved
           const sc = Number(e.service_charge) || 0, t = Number(e.total_amount) || 0;
@@ -272,7 +277,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   // work in EDIT mode too (where every field starts pre-filled and a "did the
   // user type anything" flag would always say yes).
   const formSig = () => JSON.stringify({
-    amount, title, currency, rate, feePct, paidBy, sliced,
+    amount, title, expenseNote, currency, rate, feePct, paidBy, sliced,
     split: [...splitIds].sort(),
     rest: [...restMembers].sort(),
     who: [...whosIn].sort(),
@@ -441,6 +446,12 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   async function save() {
     if (!canSave) return;
     setSaving(true);
+    // Every step below is a live Supabase call and there is no offline queue, so
+    // any of them can fail (no signal, a schema the build doesn't match). Before
+    // this guard a failure threw out of the promise: `saving` was never cleared,
+    // so Save just went dead with nothing on screen. Now it says so and lets you
+    // retry. The body is left un-indented to keep the diff readable.
+    try {
     const owner_id = self.owner_id;
     if (needsRate && rateNum > 0) localStorage.setItem(`papaya:rate:${currency}:${era}`, rate);
     // Pin this expense's own native→era rate AND the era that rate points at.
@@ -454,7 +465,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
     // recording's currency, so there's no float round-trip.
     const recToEra = baseCurrency !== era ? Number(recording?.exchange_rate) || 1 : 1;
     const expToBase = currency === baseCurrency ? 1 : homeRate / recToEra;
-    const fields = { recording_id: recording?.id || null, paid_by: paidBy, title: title.trim() || ts, total_amount: total, service_charge: feeAmount > 0 ? feeAmount : null, currency, exchange_rate: expToBase, home_rate: homeRate, home_currency: era };
+    const fields = { recording_id: recording?.id || null, paid_by: paidBy, title: title.trim() || ts, note: expenseNote.trim() || null, total_amount: total, service_charge: feeAmount > 0 ? feeAmount : null, currency, exchange_rate: expToBase, home_rate: homeRate, home_currency: era };
     let exp;
     if (editExpenseId) {
       // editing: update the row and rebuild its split (old items + members cascade-delete)
@@ -462,7 +473,8 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
       await supabase.from("expense_items").delete().eq("expense_id", editExpenseId);
       exp = { id: editExpenseId };
     } else {
-      const { data } = await supabase.from("expenses").insert({ owner_id, ...fields }).select().single();
+      const { data, error } = await supabase.from("expenses").insert({ owner_id, ...fields }).select().single();
+      if (error || !data) throw error || new Error("expense insert returned nothing");
       exp = data;
     }
     const participants = new Set();
@@ -499,6 +511,13 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
     }
     setSaving(false);
     onClose(true);
+    } catch (e) {
+      console.warn("expense save failed", e);
+      setSaving(false);
+      // reuse the form's existing alert; the form stays exactly as it was, so
+      // nothing typed is lost and Save can simply be pressed again
+      setNote("Couldn’t save this expense. Check your connection and try again — nothing you typed has been lost.");
+    }
   }
 
   const payer = localPeople.find((p) => p.id === paidBy);
@@ -615,6 +634,18 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
             <input autoFocus value={title} placeholder={ts} onChange={(e) => setTitle(e.target.value)} onBlur={() => setEditingTitle(false)} onKeyDown={(e) => e.key === "Enter" && setEditingTitle(false)} style={{ textAlign: "right", background: "none", border: "none", outline: "none", fontSize: 15, maxWidth: 220 }} />
           ) : (
             <span style={{ ...label, color: title ? "var(--text)" : "var(--text-3)" }}>{title || ts}</span>
+          )}
+        </div>
+
+        {/* note — "what was this ฿400 for?", answered months later. Same inline
+            row as Title rather than a textarea, so the form keeps its rhythm;
+            long notes truncate here and read in full on the expense detail. */}
+        <div style={row} onClick={() => { setKeypadOpen(false); setEditingNote(true); }}>
+          <span style={{ ...label, color: "var(--text-2)" }}>Note</span>
+          {editingNote ? (
+            <input autoFocus value={expenseNote} placeholder="add a note" onChange={(e) => setExpenseNote(e.target.value)} onBlur={() => setEditingNote(false)} onKeyDown={(e) => e.key === "Enter" && setEditingNote(false)} style={{ textAlign: "right", background: "none", border: "none", outline: "none", fontSize: 15, maxWidth: 220 }} />
+          ) : (
+            <span style={{ ...label, color: expenseNote ? "var(--text)" : "var(--text-3)", maxWidth: 220, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{expenseNote || "add a note"}</span>
           )}
         </div>
 

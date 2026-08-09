@@ -118,8 +118,8 @@ export default function PersonDetail({ personId, people, onClose, onOpenExpense,
     return asPayer + asMember;
   })();
 
-  async function rename(name, emoji) {
-    await supabase.from("people").update({ display_name: name, avatar_emoji: emoji }).eq("id", personId);
+  async function rename(name, emoji, payTo) {
+    await supabase.from("people").update({ display_name: name, avatar_emoji: emoji, payment_note: payTo ?? null }).eq("id", personId);
     setEditing(false);
     // The name/emoji we render come from the `people` PROP, not from load()'s
     // settlement data — so a local load() can't show the new name. Only App owns
@@ -192,6 +192,16 @@ export default function PersonDetail({ personId, people, onClose, onOpenExpense,
               )}
             </div>
           </div>
+
+          {/* how to pay them — selectable, because the whole point is copying it
+              into a banking app. Shown whatever the balance is: you may want to
+              read it back long after you've settled. */}
+          {me.payment_note && (
+            <div style={{ padding: "6px 24px 0" }}>
+              <div className="legend" style={{ marginBottom: 7 }}>How to pay {me.is_self ? "you" : me.display_name}</div>
+              <div style={{ fontSize: 14.5, lineHeight: 1.5, color: "var(--text-2)", userSelect: "text", padding: "0 0 18px", whiteSpace: "pre-wrap" }}>{me.payment_note}</div>
+            </div>
+          )}
 
           {/* in recordings */}
           <div style={{ padding: "6px 24px 0" }}>
