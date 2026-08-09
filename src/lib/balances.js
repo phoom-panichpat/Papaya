@@ -95,13 +95,56 @@ export async function unmergePerson(personId) {
   await supabase.from("people").update({ merged_into_id: null }).eq("id", personId);
 }
 
+// ── the append-only event log ─────────────────────────────────────────────
+// Every settlement-shaped ACTION lands in settlement_events and is never
+// edited or deleted, so un-settling stops erasing the settle it reverses.
+//
+// ⚠️ NOTHING HERE AFFECTS A BALANCE. Balances come from open shares and live
+// summary_transfers only. This is a log; keep it a log.
+
+// owner_id, read from the session already in memory/localStorage — no network
+// round-trip, and no need to thread it through every settle call site.
+async function currentOwnerId() {
+  const { data } = await supabase.auth.getSession();
+  return data?.session?.user?.id || null;
+}
+
+// 🔴 FAIL-SOFT, deliberately — the OPPOSITE of the summary write order below.
+// By the time this runs the money write has already succeeded. If the log
+// insert fails, throwing would make the optimistic UI re-sync and show a
+// "couldn't save" notice for a settle that saved perfectly well. A missing log
+// row is a smaller harm than lying about the money, so we warn and move on.
+async function logEvent(kind, { shares = null, recordingId = null, note = null } = {}) {
+  try {
+    const ownerId = await currentOwnerId();
+    if (!ownerId) return; // never insert a row with no owner
+    const { error } = await supabase.from("settlement_events").insert({
+      owner_id: ownerId, kind, shares, recording_id: recordingId, note: note || null,
+    });
+    if (error) console.warn("settlement_events log failed", error);
+  } catch (e) {
+    console.warn("settlement_events log failed", e);
+  }
+}
+
+export async function loadEvents(limit = 200) {
+  const { data } = await supabase
+    .from("settlement_events").select("*")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  return data || [];
+}
+
 // ── mutations ────────────────────────────────────────────────────────────
 // Settle / un-settle specific (item, person) shares. settled_at is the
 // single source of truth for outstanding balances.
 // `at` is optional: optimistic callers pin the timestamp themselves so the
 // local patch and the DB row carry the SAME settled_at (History groups by it).
+// `note` is optional and only reaches the log — see logEvent's fail-soft note.
 // Throws on a failed write so optimistic UIs can re-sync instead of lying.
-export async function settleShares(rows, at) {
+// `rows` is already [{itemId, personId}] — the exact shape settlement_events
+// stores in `shares`, so the log needs no transformation.
+export async function settleShares(rows, at, note) {
   const now = at || new Date().toISOString();
   const results = await Promise.all(rows.map((r) =>
     supabase.from("expense_item_members")
@@ -110,10 +153,11 @@ export async function settleShares(rows, at) {
   ));
   const bad = results.find((r) => r.error);
   if (bad) throw bad.error;
+  await logEvent("settle_shares", { shares: rows, note });
   return now;
 }
 
-export async function unsettleShares(rows) {
+export async function unsettleShares(rows, note) {
   const results = await Promise.all(rows.map((r) =>
     supabase.from("expense_item_members")
       .update({ settled_at: null })
@@ -121,6 +165,7 @@ export async function unsettleShares(rows) {
   ));
   const bad = results.find((r) => r.error);
   if (bad) throw bad.error;
+  await logEvent("unsettle_shares", { shares: rows, note });
 }
 
 // ── summaries ────────────────────────────────────────────────────────────

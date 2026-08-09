@@ -7,7 +7,18 @@ import { useBackLayer } from "../lib/backstack.jsx";
 import {
   loadSettlementData, buildContributions, pairNet, pairNetByEra, sumHomeByEra,
   settleShares, unsettleShares, patchContribsSettled, grandTotal,
+  loadEvents, buildAliasMap, resolveAlias,
 } from "../lib/balances";
+
+// The append-only log's four kinds, as the user reads them. SETTLED is the
+// settled-green, REOPENED is the danger red (a reversal must never read as a
+// settle — same reasoning as the red Un-settle button), summaries are neutral.
+const EVENT_KINDS = {
+  settle_shares:    { label: "Settled",          color: "var(--settled)" },
+  unsettle_shares:  { label: "Reopened",         color: "var(--danger)" },
+  summary:          { label: "Summary",          color: "var(--text-3)" },
+  summary_reverted: { label: "Summary reverted", color: "var(--text-3)" },
+};
 
 function money(n, cur) {
   return `${currencySymbol(cur)}${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
@@ -48,8 +59,9 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
   const [openPid, setOpenPid] = useState(null);
   const [openEvent, setOpenEvent] = useState(null);
   const [saveErr, setSaveErr] = useState(false);
-  const [histSeg, setHistSeg] = useState("settled"); // settled | records | expenses
+  const [histSeg, setHistSeg] = useState("settled"); // settled | records | expenses | activity
   const [histQ, setHistQ] = useState("");
+  const [events, setEvents] = useState([]); // the append-only settlement_events log
   const chain = useRef(Promise.resolve()); // serializes background writes
 
   // Hardware back closes an open sheet.
@@ -64,9 +76,11 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
   }, [person]);
 
   const load = useCallback(async () => {
-    const d = await loadSettlementData();
+    // one phase — the log is independent of the money data, so it rides along
+    const [d, ev] = await Promise.all([loadSettlementData(), loadEvents()]);
     setData(d);
     setContribs(buildContributions(d, home));
+    setEvents(ev);
     setLoading(false);
     onLoaded?.(); // tell App this screen is fresh (used to defer an archive pop)
   }, [home, onLoaded]);
@@ -100,7 +114,56 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
       .sort((a, b) => new Date(b.settledAt) - new Date(a.settledAt));
   })();
 
-  const historyEmpty = archivedLoose.length === 0 && archivedRecs.length === 0 && settleEvents.length === 0;
+  // ── Activity: the append-only log, described in plain language ──────────
+  // An event stores only `shares` = [{itemId, personId}], so what it COVERED is
+  // resolved here against data this screen has already loaded. Shares can go
+  // stale — editing an expense deletes and rebuilds its items — so an older
+  // event may point at ids that no longer exist. That degrades to a truthful
+  // "details no longer available" rather than rendering "undefined".
+  const activity = (() => {
+    if (!data) return [];
+    const alias = buildAliasMap(data.people || []);
+    const expById = {};
+    (data.expenses || []).forEach((e) => { expById[e.id] = e; });
+    const expByItem = {};
+    (data.items || []).forEach((it) => { expByItem[it.id] = expById[it.expense_id]; });
+    const recById = {};
+    (data.recordings || []).forEach((r) => { recById[r.id] = r; });
+
+    return (events || []).map((ev) => {
+      const shares = Array.isArray(ev.shares) ? ev.shares : [];
+      const exps = [], names = new Set();
+      const seen = new Set();
+      shares.forEach((s) => {
+        const e = expByItem[s.itemId];
+        if (e && !seen.has(e.id)) { seen.add(e.id); exps.push(e); }
+        if (s.personId) names.add(nameOf(resolveAlias(alias, s.personId)));
+      });
+      const rec = ev.recording_id ? recById[ev.recording_id] : null;
+      const n = shares.length;
+      const countPart = `${n} share${n === 1 ? "" : "s"}`;
+
+      // A summary is about a whole record, so name the record when we have it;
+      // a share settle is about an expense, so name that.
+      let detail;
+      if (rec) detail = rec.name;
+      else if (exps.length === 1) detail = exps[0].title;
+      else if (exps.length > 1) detail = `${exps.length} expenses`;
+      else detail = n ? "details no longer available" : null;
+
+      const kind = EVENT_KINDS[ev.kind] || { label: ev.kind, color: "var(--text-3)" };
+      return {
+        ev, kind,
+        line: [n ? countPart : null, detail].filter(Boolean).join(" · ") || "—",
+        haystack: [kind.label, detail, ev.note, ...names, ...exps.map((e) => e.title)]
+          .filter(Boolean).join(" ").toLowerCase(),
+      };
+    });
+  })();
+
+  const historyEmpty =
+    archivedLoose.length === 0 && archivedRecs.length === 0 &&
+    settleEvents.length === 0 && activity.length === 0;
 
   // read home currency once
   useEffect(() => {
@@ -118,6 +181,9 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
   const background = useCallback((write) => {
     chain.current = chain.current
       .then(write)
+      // the write just appended a log row — pull the log back so Activity is
+      // current, without re-loading (and re-deriving) the whole money picture
+      .then(() => loadEvents().then(setEvents).catch(() => {}))
       .catch(() => { setSaveErr(true); return load().catch(() => {}); });
   }, [load]);
 
@@ -165,11 +231,12 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
     background(() => settleShares(rows, at));
   }
 
-  // EventSheet un-settle: `rows` = the (possibly partial) member rows to reopen
-  function unsettleEvent(rows) {
+  // EventSheet un-settle: `rows` = the (possibly partial) member rows to reopen.
+  // `note` is optional and only reaches the log — it can never move a balance.
+  function unsettleEvent(rows, note) {
     setContribs((cs) => patchContribsSettled(cs, rows, null));
     setOpenEvent(null);
-    background(() => unsettleShares(rows));
+    background(() => unsettleShares(rows, note));
   }
 
   return (
@@ -202,6 +269,7 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
                   { id: "settled", label: "Settled", count: settleEvents.length },
                   { id: "records", label: "Records", count: archivedRecs.length },
                   { id: "expenses", label: "Expenses", count: archivedLoose.length },
+                  { id: "activity", label: "Activity", count: activity.length },
                 ].map((s) => {
                   const active = histSeg === s.id;
                   return (
@@ -297,6 +365,30 @@ export default function Settlement({ people, refreshKey, onOpenExpense, onOpenRe
                     </button>
                   );
                 });
+              })()}
+
+              {/* Activity — the append-only log. READ-ONLY on purpose: reversing
+                  a settle lives in the Settled section's sheet, so there is
+                  exactly one control surface for it. A log you can act on is
+                  how the Phase-6 stuck state happened. */}
+              {histSeg === "activity" && (() => {
+                const q = histQ.trim().toLowerCase();
+                const list = q ? activity.filter((a) => a.haystack.includes(q)) : activity;
+                if (!list.length) return <div style={{ textAlign: "center", padding: "50px 0", color: "var(--text-3)", fontSize: 14 }}>{activity.length ? "No matches." : "No activity yet."}</div>;
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {list.map((a) => (
+                      <div key={a.ev.id} style={{ background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "var(--r-card)", padding: "13px 18px", display: "flex", flexDirection: "column", gap: 5 }}>
+                        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+                          <span className="mono" style={{ fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: a.kind.color, flex: "none" }}>{a.kind.label}</span>
+                          <span className="mono" style={{ fontSize: 10, color: "var(--text-4)", flex: "none" }}>{relTime(a.ev.created_at)}</span>
+                        </div>
+                        <div style={{ fontSize: 14.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.line}</div>
+                        {a.ev.note && <div style={{ fontSize: 13, color: "var(--text-3)" }}>{a.ev.note}</div>}
+                      </div>
+                    ))}
+                  </div>
+                );
               })()}
             </div>
           </>
@@ -557,6 +649,7 @@ function PersonSettleSheet({ self, other, contribs, home, nameOf, onClose, onCom
 function EventSheet({ event, self, home, nameOf, onClose, onUnsettle }) {
   function keyOf(c) { return `${c.itemId}:${c.personId}`; }
   const [ticked, setTicked] = useState(() => new Set()); // start unchecked — un-settling is deliberate
+  const [note, setNote] = useState(""); // optional "why?" — goes to the log only
   function toggle(c) {
     setTicked((s) => { const n = new Set(s); const k = keyOf(c); n.has(k) ? n.delete(k) : n.add(k); return n; });
   }
@@ -572,7 +665,8 @@ function EventSheet({ event, self, home, nameOf, onClose, onUnsettle }) {
 
   function unsettle() {
     if (!tickedContribs.length) return;
-    onUnsettle(tickedContribs.flatMap((c) => c.settleKeys)); // ORIGINAL member rows
+    // ORIGINAL member rows (merge-safe); the note rides along to the log
+    onUnsettle(tickedContribs.flatMap((c) => c.settleKeys), note.trim() || undefined);
   }
 
   return (
@@ -629,6 +723,15 @@ function EventSheet({ event, self, home, nameOf, onClose, onUnsettle }) {
 
         {/* footer: bordered secondary un-settle (NOT the orange primary) */}
         <div style={{ borderTop: "1px solid var(--hairline)", marginTop: 10, paddingTop: 14 }}>
+          {/* optional reason — the log keeps it forever, so a reversal can be
+              explained later. Only on this deliberate path: the per-person
+              toggle in an expense is a tap, and a prompt would ruin it. */}
+          <input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="why? (optional)"
+            style={{ width: "100%", height: 40, padding: "0 14px", marginBottom: 10, background: "var(--bg)", border: "1px solid var(--hairline)", borderRadius: 12, fontSize: 14, outline: "none" }}
+          />
           <div className="mono" style={{ fontSize: 10.5, color: "var(--text-3)", marginBottom: 10 }}>
             returns {tickedContribs.length} share{tickedContribs.length === 1 ? "" : "s"} to balances
           </div>
