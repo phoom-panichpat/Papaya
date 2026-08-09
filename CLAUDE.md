@@ -723,3 +723,19 @@ So a one-night guest currently gets re-proposed by three separate affordances. F
 **Deliberately left for Phoom to decide:** whether a guest can be demoted back, and whether promoting is a tap on the guest row or a mode.
 
 **Routing:** 🟠 Hard (multi-file: ExpenseForm, RecordingDetail, CreateRecording, suggestions.js, PeoplePicker) but well-specified → GLM 5.2 in opencode, or Claude Code if Phoom would rather it be verified in-browser in one pass.
+
+---
+
+## 12. 📤 EXPORT / SHARE A RECORD (Phoom, 2026-08-09) — good idea, worth doing BEFORE multi-user
+
+Phoom: *"since my friends can't see the record/expense easily now… export the summary of record with all the expense in some kind of file that is easily shared across many platform."*
+
+**Verdict: yes, and it's higher-leverage than it looks** — it solves the actual need (friends can see what they owe) with **zero multi-user work, no accounts, no invites, no RLS**. It's the cheap 80% of the thing §11 is the expensive 100% of, and it stays useful afterwards.
+
+**⚠️ One pushback, and it changes the shape: don't lead with "a file."** On a phone a file is friction — save it, find it, attach it. What actually gets read is a **message in the group chat**. So:
+
+1. **Plain-text summary → the share sheet (BUILD THIS FIRST).** `navigator.share({ text })` works in an installed PWA on Android and lands straight in LINE/WhatsApp in two taps, with **no file at all**. Content: record name + date range, the "who pays who" lines (or the live summary plan if one exists), then the expense list with payer and amount. Plain text can't break, renders everywhere, and needs no viewer. Fallback for unsupported browsers: copy to clipboard. 🟢/🟡 — small.
+2. **CSV export** — second, for whoever wants the raw numbers in Sheets/Excel. One row per expense (or per share, decide later). 🟡.
+3. **Pretty PDF / image card** — nicest-looking, by far the most work (layout, fonts, a rendering path the app doesn't have). **Defer** until there's evidence people want more than the text.
+
+**Design notes:** honour the record's era + currencies (dual figures the same way the screens do); a settled/frozen record should say so; **never dump anyone's `payment_note` into a shared export without Phoom asking for it** — it's semi-private and would be pasted into a group chat.
