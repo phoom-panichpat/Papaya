@@ -57,6 +57,12 @@ create table recordings (
   home_currency text,
   is_active     boolean not null default false,  -- live session (max one per owner; enforced in app)
   archived_at   timestamptz,                     -- null = active (on Home); set = archived (in History)
+  -- SHARE LINK: null = not shared. A random token that unlocks a read-only
+  -- public view of this one record (see get_shared_record at the bottom of
+  -- this file). Revoke = set back to null; regenerate = write a new one,
+  -- which kills every old link. `unique` still permits many nulls.
+  share_token      text unique,
+  share_created_at timestamptz,
   created_at    timestamptz default now()
 );
 
@@ -296,3 +302,156 @@ create policy "owner_all" on expense_item_members for all using (owner_id = auth
 create policy "owner_all" on settlement_events    for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owner_all" on summary_transfers    for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owner_all" on summary_groups       for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+
+-- ── share links: the ONLY public read path ─────────────────────────────
+-- A read-only view of ONE record, unlocked by recordings.share_token.
+--
+-- 🔑 This adds NO RLS policy and changes none of the existing ones. Rather
+-- than teaching the tables "this visitor may read this row" — a cross-table
+-- lookup inside a policy, i.e. exactly the recursion that killed v1 — the
+-- entire public surface is this one security-definer function. It only ever
+-- SELECTs, so there is no public write path at all.
+--
+-- Every column is named EXPLICITLY: never row_to_json / select * here, or a
+-- future column would silently become public. people.payment_note is
+-- deliberately absent — it is how someone gets PAID, and this payload lands
+-- in a group chat.
+
+create or replace function get_shared_record(token text)
+returns json
+language sql
+security definer
+stable
+set search_path = public
+as $$
+with
+rec as (
+  select * from recordings r
+   where token is not null
+     and r.share_token is not null
+     and r.share_token = token
+   limit 1
+),
+exp as (
+  select e.* from expenses e where e.recording_id in (select id from rec)
+),
+itm as (
+  select i.* from expense_items i where i.expense_id in (select id from exp)
+),
+mem as (
+  select m.* from expense_item_members m where m.item_id in (select id from itm)
+),
+grp as (
+  select g.* from summary_groups g where g.recording_id in (select id from rec)
+),
+xfer as (
+  select t.* from summary_transfers t where t.recording_id in (select id from rec)
+),
+rmem as (
+  select rm.* from recording_members rm where rm.recording_id in (select id from rec)
+),
+-- Everyone this record actually references …
+seed_people as (
+  select paid_by     as id from exp
+  union select person_id   from mem
+  union select from_person from xfer
+  union select to_person   from xfer
+  union select person_id   from rmem
+),
+-- … plus anyone they've been merged INTO. Without this a merged token
+-- resolves (via merged_into_id) to a person missing from the payload and
+-- renders as a blank name. ONE hop, which covers the real case (token →
+-- account); a longer merge chain would drop its tail, and the failure mode
+-- is a blank name on a shared page, never a wrong number.
+ppl_ids as (
+  select id from seed_people
+  union
+  select p.merged_into_id from people p
+   where p.merged_into_id is not null
+     and p.id in (select id from seed_people)
+)
+select case when not exists (select 1 from rec) then null::json else json_build_object(
+  'recording', (select json_build_object(
+      'id',            r.id,
+      'name',          r.name,
+      'base_currency', r.base_currency,
+      'exchange_rate', r.exchange_rate,
+      'home_currency', r.home_currency,
+      'archived_at',   r.archived_at,
+      'created_at',    r.created_at
+    ) from rec r),
+
+  'expenses', coalesce((select json_agg(json_build_object(
+      'id',               e.id,
+      'recording_id',     e.recording_id,
+      'paid_by',          e.paid_by,
+      'title',            e.title,
+      'note',             e.note,
+      'total_amount',     e.total_amount,
+      'service_charge',   e.service_charge,
+      'currency',         e.currency,
+      'exchange_rate',    e.exchange_rate,
+      'home_rate',        e.home_rate,
+      'home_currency',    e.home_currency,
+      'summary_group_id', e.summary_group_id,
+      'created_at',       e.created_at
+    )) from exp e), '[]'::json),
+
+  'items', coalesce((select json_agg(json_build_object(
+      'id',         i.id,
+      'expense_id', i.expense_id,
+      'label',      i.label,
+      'amount',     i.amount,
+      'is_rest',    i.is_rest,
+      'sort_order', i.sort_order
+    )) from itm i), '[]'::json),
+
+  'members', coalesce((select json_agg(json_build_object(
+      'item_id',    m.item_id,
+      'person_id',  m.person_id,
+      'settled_at', m.settled_at,
+      'summary_id', m.summary_id
+    )) from mem m), '[]'::json),
+
+  'groups', coalesce((select json_agg(json_build_object(
+      'id',           g.id,
+      'recording_id', g.recording_id,
+      'name',         g.name,
+      'frozen_at',    g.frozen_at,
+      'created_at',   g.created_at
+    )) from grp g), '[]'::json),
+
+  'transfers', coalesce((select json_agg(json_build_object(
+      'id',            t.id,
+      'summary_id',    t.summary_id,
+      'recording_id',  t.recording_id,
+      'from_person',   t.from_person,
+      'to_person',     t.to_person,
+      'amount',        t.amount,
+      'currency',      t.currency,
+      'home_amount',   t.home_amount,
+      'home_currency', t.home_currency,
+      'settled_at',    t.settled_at,
+      'superseded_by', t.superseded_by
+    )) from xfer t), '[]'::json),
+
+  'recording_members', coalesce(
+    (select json_agg(json_build_object('person_id', rm.person_id)) from rmem rm),
+    '[]'::json),
+
+  -- NOTE: payment_note is deliberately absent. It is how someone gets PAID,
+  -- and this payload lands in a group chat.
+  'people', coalesce((select json_agg(json_build_object(
+      'id',             p.id,
+      'display_name',   p.display_name,
+      'avatar_emoji',   p.avatar_emoji,
+      'avatar_color',   p.avatar_color,
+      'merged_into_id', p.merged_into_id
+    )) from people p
+     where p.id in (select id from ppl_ids)
+       -- defense-in-depth: RLS is bypassed in here, so scope to the owner too
+       and p.owner_id = (select owner_id from rec)), '[]'::json)
+) end;
+$$;
+
+grant execute on function get_shared_record(text) to anon, authenticated;

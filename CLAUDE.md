@@ -769,3 +769,47 @@ Phoom: *"is there a way for a user to check the logic behind the summary functio
 **Export:** an opt-in **"Include the working"** checkbox in the share sheet (off by default — it roughly doubles the message). Built from the identical filter, so message and screen agree.
 
 **Live-verified** on Phoom's real *"mini seoul"* record (read-only; export and this panel write nothing): per-person arithmetic correct, drill-down summing exactly to the stated net (₩7,142.86 + ₩3,174.57 = ₩10,317.43), balance check `0 ✓`, both corrected copy paths, and the exported working text. No console errors.
+
+---
+
+## 13. ✅ SHARE LINKS — a read-only public view of a record (2026-08-10, Claude Code/Opus 5; commit titled *"Share a record with a read-only link"*; `npm test` **154/154** untouched, build clean; **migration RUN, Claude-verified end to end**). ⚠️ **NOT yet pushed — and not yet visually checked by Phoom (the Share button itself; see the bottom of this section).**
+
+**This is §11 re-scoped.** Phoom's 2026-08-09 call was "make it multi-user for real." Offered the full build vs. a read-only share link first, he chose **share link first** — and read-only, no account needed, no write path.
+
+**Why that sequencing is right:** the complaint underneath §11 was *"my friends can't see the record."* A live link answers it with **zero multi-user work** — no accounts, no invites, and critically **no cross-table RLS**. Full multi-user (own accounts, logging into your record, cross-account identity claiming) remains §11 and is unchanged; this just buys the value first and produces evidence about what people actually reach for.
+
+### 🔑 THE ARCHITECTURE — ONE security-definer function IS the entire public surface
+Instead of teaching the tables *"this visitor may read this row"* — a **cross-table lookup inside a policy, i.e. exactly the recursion that killed v1** (§5 forbids it) — a visitor calls **`get_shared_record(token)`**, which runs elevated, finds the one record that token unlocks, and returns a **shaped JSON payload**. **No RLS policy is added or changed anywhere.** Every table keeps its flat `owner_id = auth.uid()` check.
+- **Read-only by construction** — a `stable` function that only SELECTs. There is no public write path at all, so a leaked link cannot alter anything.
+- **Every column is named EXPLICITLY. Never `row_to_json`/`select *` in there** — a future column would silently become public. Deliberately excluded: **`people.payment_note`** (it's how someone gets PAID and this lands in a group chat — same call as §12's export), `owner_id`, emails, `is_self`, `linked_profile_id`, and anything outside the record.
+- **Sharing needs NO new function.** The owner just writes a random token to their own `recordings.share_token` — existing RLS already permits it. Revoke = null it. Regenerate = overwrite, which kills every old link. `unique` still allows many nulls.
+- People included = everyone the record references **plus anyone they've been merged into** (a recursive walk over `merged_into_id`) — without that, a merged token resolves via the alias to a person missing from the payload and renders blank.
+
+### 🔑 The payoff: the page reuses the money core, so it CANNOT disagree with the app
+The payload comes back in exactly the `{expenses, items, members, recordings, people, transfers}` shape `buildContributions` already eats, so `SharedRecord.jsx` runs the **same `buildContributions` / `planSummary` / `statusForExpense`** as Phoom's screen. Same discipline that made the export trustworthy (§12), applied to a live page. The page computes nothing of its own.
+- It shows the **minimized plan**, matching §12's finding that direct-pairwise produces unreadable noise (13 lines on a real record vs 6).
+- **Two money formatters, still not collapsed** (§12): `formatMoney` (whole units for THB/KRW/…) for amounts someone TYPED; up to 2dp for computed shares and transfers.
+- **No "You" on this page** — the reader isn't the owner, so everyone is called by name.
+- Home currency = the **record's era** (`eraFor`), since a record can only ever hold one era. There is no viewer home currency and none is invented.
+
+### Files
+- **`migrations/2026-08-10-share-links.sql`** — the two columns + the function + `grant execute to anon, authenticated`. Mirrored into `schema.sql` for clean applies. (First migration kept as a repo file rather than a chat paste block — they get lost.)
+- **`src/lib/share.js`** — `createShareLink` / `revokeShareLink` / `shareUrl` / `loadSharedRecord`.
+- **`src/screens/SharedRecord.jsx`** — the public page: header, "who pays who", an expandable **"how this was worked out"** (per-person share − paid = net, drill-down to individual expenses, plus the balance check), the expense list with payer + settled markers + notes, and a footer stating payment details are excluded.
+- **`src/main.jsx`** — one regex on `location.pathname` decides `<SharedRecord/>` vs `<App/>`, **before App mounts**, so a visitor never meets the auth gate. No router library; `vercel.json`'s SPA rewrite already serves index.html for `/s/…`.
+- **`src/screens/RecordingDetail.jsx`** — the Share sheet gains **"Send a link"** as the accent primary (demoting "Send summary" to secondary) plus **Copy link / Stop sharing** once shared. Rationale: a link stays correct as expenses keep arriving; a pasted summary goes stale the moment you log the next dinner. One-line swap if Phoom disagrees.
+
+### ⚠️ THE MIGRATION MUST RUN BEFORE THE PUSH — ✅ APPLIED LIVE 2026-08-10
+The Share control **writes** `share_token`, so this is the §10.7 case, not the provable-no-op case: shipping early makes sharing 400.
+
+**🔑 LESSON — SPLIT A MIGRATION THAT CREATES A FUNCTION INTO TWO RUNS.** The first attempt looked like it succeeded but nothing landed: **the Supabase SQL editor wraps a script in ONE transaction**, so the failing `create function` at the bottom silently **rolled back the two `alter table` lines above it**. The symptom was a baffling "I ran the migration" → `42703 column share_token does not exist`. The file now has an explicit `STEP 1` / `STEP 2` split so the columns commit independently and any function error is isolated. Three things were hardened when it failed (no local Postgres to parse-check against, so all three at once rather than guessing): `null::json` instead of a bare `null` in the outer `case` (type resolution — the likely culprit), **`with recursive` dropped** in favour of a one-hop merge resolution, and `join rec on …` replaced with `where … in (select id from rec)`.
+
+### ✅ VERIFIED END TO END (2026-08-10, isolated anonymous guest — `is_anonymous` checked first per [[papaya-guest-verification]])
+**16/16 assertions passed.** The test is built on the §3b principle — *a page agreeing with itself proves nothing* — so it builds contributions **twice**: once from the RPC payload a stranger receives, once from the real tables read with the owner's session, and asserts they are identical. Any dropped row, missing column or lost exchange rate in the function surfaces as a mismatch.
+- **Every debt identical** (debtor, creditor, native/base/home, currency, era, settled) and the **settle plan identical**. Run against a **KRW record under a THB era** (rate 0.026) — the dual-currency case that would break first if the recording's rate were dropped from the payload.
+- **Privacy asserted with a real value, not a null:** a `payment_note` was written to a person first, then the payload checked — `payment_note`, `owner_id`, `is_self`, `linked_profile_id` and the `share_token` itself are all absent, and the **other record's expenses are not included**.
+- **Revoke works** (link returns null afterwards); an unknown token returns null too, so a visitor can't distinguish the two.
+- **The page renders those exact numbers**: `Rui → Guest ₩72,333.33 (฿1,880.67)`, `Ana → Guest ₩39,333.33 (฿1,022.67)`, with the working expanding to per-person `share − paid = net` that sums to `BALANCES ✓`, and "03 separate debts → 02 payments". No console errors, no failed resources.
+- **The verification script was deliberately NOT kept in the repo.** It PATCHes `people.payment_note` and `recordings.share_token`, and per §2b the live DB holds real trip data — a write-capable one-off script sitting in the tree is a footgun. To redo it: pull a guest JWT from the `sb-*` localStorage key (after checking `is_anonymous`), then build the same payload two ways (RPC with anon headers only vs. authenticated table reads) and diff normalized `buildContributions` output.
+
+**⚠️ NOT verified here — for Phoom's pass:** the **Share button's own wiring** (create link → OS share sheet → Copy link / Stop sharing). The underlying write is proven (the same PATCH the button issues), but the button was not clicked: partway through the session the Browser pane detached and **even a bottom-nav tab switch stopped responding to synthetic clicks** — a harness failure, not an app one (earlier clicks in the same session worked).

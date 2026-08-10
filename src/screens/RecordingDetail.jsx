@@ -11,6 +11,7 @@ import {
 import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
 import { buildRecordText, buildRecordCsv, shareText, downloadCsv, safeFilename } from "../lib/exportRecord";
+import { createShareLink, revokeShareLink, shareUrl } from "../lib/share";
 import { useBackLayer, BACK_LEVEL } from "../lib/backstack.jsx";
 
 function monthDay(d) {
@@ -382,6 +383,10 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
   // { label, scope, plan } — what the explain panel is explaining
   const [explain, setExplain] = useState(null);
   const [shareMsg, setShareMsg] = useState(null);
+  // The live share link. Mirrors rec.share_token so the sheet reacts instantly
+  // to create/revoke without waiting on a reload.
+  const [shareToken, setShareToken] = useState(null);
+  const [linkBusy, setLinkBusy] = useState(false);
 
   const archiving = useRef(false); // skip self-reload during archive-close so the button doesn't flip before the pop
   const chain = useRef(Promise.resolve()); // serializes background writes
@@ -751,6 +756,48 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
     };
   }
 
+  // ── the live link ─────────────────────────────────────────────────────────
+  // Creating one is a plain owner-scoped update; the public read goes through
+  // the security-definer function (see lib/share.js). Failures surface through
+  // SaveError like every other write on this screen.
+  async function doSendLink() {
+    setLinkBusy(true);
+    try {
+      const token = shareToken || (await createShareLink(recordingId));
+      setShareToken(token);
+      setShareOpen(false);
+      const how = await shareText(shareUrl(token), rec?.name || "Record");
+      if (how === "copied") setShareMsg("link copied");
+      else if (how === "failed") setShareMsg("couldn’t share — try again");
+    } catch {
+      setSaveErr(true);
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
+  async function doCopyLink() {
+    try {
+      await navigator.clipboard.writeText(shareUrl(shareToken));
+      setShareMsg("link copied");
+    } catch {
+      setShareMsg("couldn’t copy");
+    }
+  }
+
+  async function doRevokeLink() {
+    setLinkBusy(true);
+    try {
+      await revokeShareLink(recordingId);
+      setShareToken(null);
+      setShareMsg("link turned off");
+    } catch {
+      setSaveErr(true);
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
   async function doShareText() {
     const { text } = buildExport();
     setShareOpen(false);
@@ -771,6 +818,8 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
     const t = setTimeout(() => setShareMsg(null), 2600);
     return () => clearTimeout(t);
   }, [shareMsg]);
+
+  useEffect(() => { setShareToken(rec?.share_token || null); }, [rec?.share_token]);
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "var(--bg)", zIndex: 30, display: "flex", flexDirection: "column" }}>
@@ -1065,9 +1114,28 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
               For people who don’t have the app. Nobody’s payment details are included.
             </div>
 
-            <button onClick={doShareText} style={{ width: "100%", height: 52, borderRadius: 14, background: "var(--accent)", color: "#fff", fontSize: 15, fontWeight: 600, marginBottom: 10, textAlign: "left", padding: "0 18px" }}>
+            {/* A link beats a message for the thing Phoom actually wanted — it
+                stays correct as expenses keep arriving, where a pasted summary
+                goes stale the moment you log the next dinner. */}
+            <button onClick={doSendLink} disabled={linkBusy} style={{ width: "100%", height: 52, borderRadius: 14, background: "var(--accent)", color: "#fff", fontSize: 15, fontWeight: 600, marginBottom: 10, textAlign: "left", padding: "0 18px", opacity: linkBusy ? 0.55 : 1 }}>
+              {shareToken ? "Send link again" : "Send a link"}
+              <div style={{ fontSize: 11.5, fontWeight: 500, opacity: 0.85, marginTop: 1 }}>a page they can open — always up to date</div>
+            </button>
+
+            {shareToken && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                <button onClick={doCopyLink} className="mono" style={{ flex: 1, height: 40, borderRadius: 12, background: "var(--bg)", border: "1px solid var(--hairline)", fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-2)" }}>
+                  Copy link
+                </button>
+                <button onClick={doRevokeLink} disabled={linkBusy} className="mono" style={{ flex: 1, height: 40, borderRadius: 12, background: "var(--bg)", border: "1px solid var(--hairline)", fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--danger)", opacity: linkBusy ? 0.55 : 1 }}>
+                  Stop sharing
+                </button>
+              </div>
+            )}
+
+            <button onClick={doShareText} style={{ width: "100%", height: 52, borderRadius: 14, background: "var(--bg)", border: "1px solid var(--hairline)", fontSize: 15, fontWeight: 600, marginBottom: 10, textAlign: "left", padding: "0 18px" }}>
               Send summary
-              <div style={{ fontSize: 11.5, fontWeight: 500, opacity: 0.85, marginTop: 1 }}>who owes who + the expense list, as a message</div>
+              <div className="mono" style={{ fontSize: 10, fontWeight: 500, color: "var(--text-3)", marginTop: 2, letterSpacing: "0.05em", textTransform: "uppercase" }}>a snapshot, as plain text</div>
             </button>
 
             {/* opt-in: roughly doubles the message, so the default stays short */}
