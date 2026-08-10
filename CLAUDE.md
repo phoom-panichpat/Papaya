@@ -725,16 +725,24 @@ Phoom asked whether to design this single-user or multi-user-aware, and thinking
 
 ---
 
-## 12. 📤 EXPORT / SHARE A RECORD (Phoom, 2026-08-09) — good idea, worth doing BEFORE multi-user
+## 12. ✅ EXPORT / SHARE A RECORD — BUILT + LIVE-VERIFIED (2026-08-10, Claude Code/Opus 5; `npm test` 154/154 untouched, build clean, NO migration)
 
-Phoom: *"since my friends can't see the record/expense easily now… export the summary of record with all the expense in some kind of file that is easily shared across many platform."*
+Phoom: *"since my friends can't see the record/expense easily now… export the summary of record with all the expense in some kind of file that is easily shared across many platform."* It solves the real need — friends can see what they owe — with **zero multi-user work, no accounts, no invites, no RLS**, and it stays useful after §11 lands.
 
-**Verdict: yes, and it's higher-leverage than it looks** — it solves the actual need (friends can see what they owe) with **zero multi-user work, no accounts, no invites, no RLS**. It's the cheap 80% of the thing §11 is the expensive 100% of, and it stays useful afterwards.
+**Shape: text-first, not file-first.** On a phone a file is friction (save it, find it, attach it); a message pastes straight into the group chat, which is where it gets read. `Share` in the RecordingDetail header opens a sheet with two options: **Send summary** (primary) and **Download CSV**.
 
-**⚠️ One pushback, and it changes the shape: don't lead with "a file."** On a phone a file is friction — save it, find it, attach it. What actually gets read is a **message in the group chat**. So:
+**New `src/lib/exportRecord.js`** — pure string building. It takes rows the screen has *already* resolved and returns text, so **an export can never disagree with the app**: every figure was derived by `balances-core`. Exports `buildRecordText` · `buildRecordCsv` · `shareText` · `downloadCsv` · `safeFilename`.
+- `shareText` prefers `navigator.share` (two taps into LINE/WhatsApp from the installed PWA) and **falls back to the clipboard** where it doesn't exist — desktop browsers included. Returns what actually happened, so the UI confirms *only* when nothing visible occurred (the OS sheet is its own feedback). A user-cancelled share is `AbortError` and is silently fine.
+- CSV is one row per expense: ISO-ish dates (sort correctly in a spreadsheet), **raw unformatted numbers**, RFC-style quote escaping. Verified against real Thai-language titles.
 
-1. **Plain-text summary → the share sheet (BUILD THIS FIRST).** `navigator.share({ text })` works in an installed PWA on Android and lands straight in LINE/WhatsApp in two taps, with **no file at all**. Content: record name + date range, the "who pays who" lines (or the live summary plan if one exists), then the expense list with payer and amount. Plain text can't break, renders everywhere, and needs no viewer. Fallback for unsupported browsers: copy to clipboard. 🟢/🟡 — small.
-2. **CSV export** — second, for whoever wants the raw numbers in Sheets/Excel. One row per expense (or per share, decide later). 🟡.
-3. **Pretty PDF / image card** — nicest-looking, by far the most work (layout, fonts, a rendering path the app doesn't have). **Defer** until there's evidence people want more than the text.
+**🔑 THE ONE REAL DESIGN FINDING — the export sends the MINIMIZED plan (`planSummary`), not direct pairwise.** The first cut used `directTransfers` on the reasoning that it matches the screen. Running it against Phoom's real 25-expense Korea record produced **THIRTEEN** "who owes who" lines — unreadable in a chat, and the identical noise problem that killed the old settle sheet (§10.5R). Switching to `planSummary` cut it to **six**, and it's also exactly what "Settle up this record" previews, so the message matches the plan you'd act on. Frozen groups need no special case: their shares are closed and only their transfer atoms are open, so they net straight through. *Generalisable: "matches the screen" is not automatically the right rule for an artefact someone reads outside the app.*
 
-**Design notes:** honour the record's era + currencies (dual figures the same way the screens do); a settled/frozen record should say so; **never dump anyone's `payment_note` into a shared export without Phoom asking for it** — it's semi-private and would be pasted into a group chat.
+**⚠️ TWO MONEY FORMATTERS, AND THEY MUST NOT BE COLLAPSED.** `format.js`'s `formatMoney` rounds THB/KRW/JPY/LAK/VND to whole units ("conventionally shown without decimals") — right for an amount someone TYPED, and what the record's expense rows show. A computed share or transfer is genuinely fractional, so the settle screens use their own `Money` component at up to 2 dp. The export therefore has **both** (`money()` for expense rows, `computed()` for transfers): using the rounding one throughout printed `₩82,333` where the app says `₩82,333.33`. Caught by diffing the output against the settle screen, not by reading the code.
+
+**Privacy:** **nobody's `payment_note` is included**, and the sheet says so. It's semi-private and this text is headed for a group chat. Only add it — probably self's only — if Phoom asks.
+
+**Live-verified against REAL data** (his own account, on purpose: export is strictly read-only, so it was safe, and 25 accumulated Thai-titled expenses are a far better test than seed data — no writes of any kind were made). Captured the generated text by intercepting `clipboard.writeText`, and the CSV by intercepting `createObjectURL`, rather than triggering OS dialogs. Text: correct header, 6 minimized lines with `(≈ ฿…)` home hints since the record's era (THB) ≠ its currency (KRW), full expense list with payer and `· settled` markers, and a total. CSV: correct header, dates, Thai titles, raw amounts. Filename slug `seoul-08-2026-mango-trip.csv`. No console errors.
+
+**Deferred, unchanged:** a pretty PDF / image card — nicest-looking, by far the most work (layout, fonts, a rendering path the app doesn't have). Wait for evidence people want more than the text.
+
+**Not built, worth knowing:** export is per-RECORD only. There is no export for loose expenses or for a whole person's balance. Easy to add if asked.

@@ -9,6 +9,7 @@ import {
 } from "../lib/balances";
 import DualMoney from "../components/DualMoney";
 import SaveError from "../components/SaveError";
+import { buildRecordText, buildRecordCsv, shareText, downloadCsv, safeFilename } from "../lib/exportRecord";
 import { useBackLayer, BACK_LEVEL } from "../lib/backstack.jsx";
 
 function monthDay(d) {
@@ -198,6 +199,8 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
   const [renaming, setRenaming] = useState(null);   // group being renamed
   const [nameDraft, setNameDraft] = useState("");
   const [confirmUngroup, setConfirmUngroup] = useState(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareMsg, setShareMsg] = useState(null);
 
   const archiving = useRef(false); // skip self-reload during archive-close so the button doesn't flip before the pop
   const chain = useRef(Promise.resolve()); // serializes background writes
@@ -220,6 +223,7 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
   useBackLayer(checkMode, () => setCheckMode(false));
   useBackLayer(!!renaming, () => setRenaming(null));
   useBackLayer(!!confirmUngroup, () => setConfirmUngroup(null), BACK_LEVEL.SHEET);
+  useBackLayer(shareOpen, () => setShareOpen(false), BACK_LEVEL.SHEET);
 
   const load = useCallback(async () => {
     // ONE parallel phase. The record-scoped settlement load already carries this
@@ -509,6 +513,62 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
 
   const collapse = (k) => setCollapsed((c) => ({ ...c, [k]: !c[k] }));
 
+  // ── export ───────────────────────────────────────────────────────────────
+  // Everything here is DERIVED from the same contribs the screen renders, so a
+  // shared summary can never disagree with what's on screen.
+  //
+  // 🔑 MINIMIZED (planSummary), not direct pairwise — this is the one place the
+  // two genuinely differ in value. A real 25-expense record produced THIRTEEN
+  // direct "who owes who" lines, which is unreadable in a group chat and is the
+  // same noise problem that killed the old settle sheet. planSummary is also
+  // exactly what "Settle up this record" previews, so the message matches the
+  // plan you'd act on. Frozen groups need no special case: their shares are
+  // closed and only their transfer atoms are open, so they net through.
+  function buildExport() {
+    const scope = (c) => c.recordingId === recordingId;
+    const plan = planSummary(contribs, scope, "base");
+    const transfers = plan.transfers.map((t) => ({
+      from: nameOf(t.from), to: nameOf(t.to), amount: t.amount, home: t.homeAmount,
+    }));
+    const expenses = logs.map((e) => ({
+      date: new Date(e.created_at).toLocaleDateString("en-CA"), // ISO-ish, sorts in a spreadsheet
+      title: e.title,
+      payer: nameOf(e.paid_by),
+      amount: grandTotal(e),
+      currency: e.currency || base,
+      settled: e.status?.kind === "settled",
+      note: e.note || "",
+    }));
+    // ⚠️ Deliberately NOT included: anyone's payment_note. It's semi-private and
+    // this text is headed for a group chat. Only add it if Phoom asks.
+    const common = { name: rec?.name, dateRange: dateLabel, baseCurrency: base, era, expenses };
+    return {
+      text: buildRecordText({ ...common, transfers, settledUp: transfers.length === 0 }),
+      csv: buildRecordCsv(common),
+    };
+  }
+
+  async function doShareText() {
+    const { text } = buildExport();
+    setShareOpen(false);
+    const how = await shareText(text, rec?.name || "Record");
+    // the OS sheet is its own feedback; only say something when nothing showed
+    if (how === "copied") setShareMsg("copied to clipboard");
+    else if (how === "failed") setShareMsg("couldn’t share — try again");
+  }
+
+  function doDownloadCsv() {
+    const { csv } = buildExport();
+    setShareOpen(false);
+    downloadCsv(csv, `${safeFilename(rec?.name)}.csv`);
+  }
+
+  useEffect(() => {
+    if (!shareMsg) return;
+    const t = setTimeout(() => setShareMsg(null), 2600);
+    return () => clearTimeout(t);
+  }, [shareMsg]);
+
   return (
     <div style={{ position: "absolute", inset: 0, background: "var(--bg)", zIndex: 30, display: "flex", flexDirection: "column" }}>
       {/* header */}
@@ -519,6 +579,7 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
         </div>
         {!loading && !checkMode && (
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <button onClick={() => setShareOpen(true)} className="mono" style={{ height: 40, padding: "0 10px", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)" }}>Share</button>
           <button onClick={() => onEdit(recordingId)} className="mono" style={{ height: 40, padding: "0 10px", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)" }}>Edit</button>
           {(allSettled || rec?.archived_at) && (
             <button onClick={toggleArchive} disabled={busy} className="mono" style={{ height: 40, padding: "0 10px", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: busy ? "var(--text-4)" : rec?.archived_at ? "var(--accent)" : "var(--text-3)" }}>{rec?.archived_at ? "Unarchive" : "Archive"}</button>
@@ -760,6 +821,36 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
         )}
         </div>)}
       </div>
+
+      {/* share sheet — two formats behind one entry point */}
+      {shareOpen && (
+        <div onClick={() => setShareOpen(false)} style={{ position: "absolute", inset: 0, background: "var(--scrim-sheet)", zIndex: 50, animation: "fadeIn 140ms ease" }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", left: 0, right: 0, bottom: 0, background: "var(--surface)", borderTop: "1px solid var(--hairline)", borderRadius: "var(--r-sheet) var(--r-sheet) 0 0", padding: "14px 20px 24px", animation: "sheetIn 240ms var(--ease)" }}>
+            <div style={{ width: 36, height: 3, borderRadius: 2, background: "#DCD6C6", margin: "0 auto 14px" }} />
+            <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em", marginBottom: 4 }}>Share {rec?.name}</div>
+            <div style={{ fontSize: 12.5, color: "var(--text-3)", lineHeight: 1.5, marginBottom: 16 }}>
+              For people who don’t have the app. Nobody’s payment details are included.
+            </div>
+
+            <button onClick={doShareText} style={{ width: "100%", height: 52, borderRadius: 14, background: "var(--accent)", color: "#fff", fontSize: 15, fontWeight: 600, marginBottom: 10, textAlign: "left", padding: "0 18px" }}>
+              Send summary
+              <div style={{ fontSize: 11.5, fontWeight: 500, opacity: 0.85, marginTop: 1 }}>who owes who + the expense list, as a message</div>
+            </button>
+
+            <button onClick={doDownloadCsv} style={{ width: "100%", height: 52, borderRadius: 14, background: "var(--bg)", border: "1px solid var(--hairline)", fontSize: 15, fontWeight: 600, textAlign: "left", padding: "0 18px" }}>
+              Download CSV
+              <div className="mono" style={{ fontSize: 10, fontWeight: 500, color: "var(--text-3)", marginTop: 2, letterSpacing: "0.05em", textTransform: "uppercase" }}>one row per expense · for a spreadsheet</div>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* only shown when the share produced nothing visible of its own */}
+      {shareMsg && (
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: 26, display: "flex", justifyContent: "center", zIndex: 60, pointerEvents: "none", animation: "fadeIn 140ms ease" }}>
+          <span className="mono" style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-2)", background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: 18, padding: "9px 16px" }}>{shareMsg}</span>
+        </div>
+      )}
 
       {saveErr && <SaveError onDone={() => setSaveErr(false)} />}
 
