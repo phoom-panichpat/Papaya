@@ -746,3 +746,26 @@ Phoom: *"since my friends can't see the record/expense easily now… export the 
 **Deferred, unchanged:** a pretty PDF / image card — nicest-looking, by far the most work (layout, fonts, a rendering path the app doesn't have). Wait for evidence people want more than the text.
 
 **Not built, worth knowing:** export is per-RECORD only. There is no export for loose expenses or for a whole person's balance. Easy to add if asked.
+
+### 12b. ✅ "HOW THIS WAS WORKED OUT" — explaining the summary (2026-08-10, Claude Code/Opus 5; `npm test` 154/154 untouched, build clean, no migration)
+
+Phoom: *"is there a way for a user to check the logic behind the summary function? … a button (something like 'i' icon) in the summary section that links to another page dedicate to explaining the logic."* Right instinct — the summary is the most magic thing in the app: it turns a pile of expenses into "Boat → You ₩259,551" with no visible derivation, and an unexplained number is socially expensive between friends.
+
+**🔑 The design call: a prose explainer would have been WORSE THAN NOTHING.** A page saying "we use a greedy algorithm to minimise transfers" answers a question nobody asks. When Boat sees his number his question is *"why do I owe YOU that much, I paid for loads too"* — which needs **his arithmetic**, not a description of the method. So the concept is one paragraph at the top and the rest is numbers. Phoom's three choices (all as recommended): **audience = the friend without the app** · **drill down to individual expenses** · **shareable, via an opt-in "include the working" in the export**.
+
+**`ExplainPanel` (module scope in `RecordingDetail.jsx`)** — a full-screen layer, not an App-stack push, since it needs `contribs` the screen already holds. Three sections:
+1. **What each person owes** — per person: *share of N expenses − paid for others = pays/gets back*, tappable to reveal the individual expense lines behind it. This is the layer that makes it checkable against a receipt.
+2. **It balances** — owed vs due, and their difference shown as `0 ✓` in `--settled` (or the delta in `--danger`). Deliberately included: it's the one claim in the app a reader can verify on the spot, and it says so — *"if they ever weren't the same, the app would be wrong."*
+3. **Who pays who** — minimisation *performed* rather than described: "there are 13 separate debts here; cancelling the ones that point both ways settles them with 6 payments", with the original debts behind a toggle.
+
+**It computes nothing new.** Same `contribs`, and the filter `!c.settled && scope(c)` is **copied verbatim from `planSummary`** — so the page cannot drift from the plan it explains. `directTransfers` supplies the "before" count.
+
+**Placement:** a quiet `InfoDot` (ⓘ) beside **check-mode's "Who pays who"** and beside a **LIVE group's "Summary"** header. **Deliberately NOT on a frozen group** — its shares are closed (`summary_id` set) so `buildContributions` skips them, and the working genuinely cannot be re-derived from open contribs. Showing a hollow page there would be worse than showing none.
+
+**Two bugs caught by running it on real data, both invisible in review:**
+- **"share of 2 expenses ₩0"** for a payer — the expense count included expenses where the person only *paid*, so someone with no share of their own still got a count. Now counts only expenses they hold a share in, and reads **"no shares of their own"** at zero. Same bug existed in the export path and was fixed there too.
+- **Section 3 claimed a reduction that hadn't happened** — with a single payer, 6 direct debts stay 6 payments, and the copy still said "cancelling… settles all of them with 6 payments". Now the equal case reads *"Nothing cancels out here — no two people owe each other — so this is already the fewest payments possible."* Same fix in the exported text.
+
+**Export:** an opt-in **"Include the working"** checkbox in the share sheet (off by default — it roughly doubles the message). Built from the identical filter, so message and screen agree.
+
+**Live-verified** on Phoom's real *"mini seoul"* record (read-only; export and this panel write nothing): per-person arithmetic correct, drill-down summing exactly to the stated net (₩7,142.86 + ₩3,174.57 = ₩10,317.43), balance check `0 ✓`, both corrected copy paths, and the exported working text. No console errors.

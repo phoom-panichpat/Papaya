@@ -36,6 +36,7 @@ export function buildRecordText({
   transfers = [],      // [{ from, to, amount, home }] — names already resolved
   expenses = [],       // [{ title, payer, amount, currency, settled }]
   settledUp = false,
+  working = null,      // optional: { people:[{name,owesTotal,paidTotal,net,count}], directCount }
 }) {
   const showHome = era && era !== baseCurrency;
   const L = [];
@@ -73,6 +74,31 @@ export function buildRecordText({
     if (oneCurrency) {
       L.push("");
       L.push(`Total: ${money(total, expenses[0].currency || baseCurrency)}`);
+    }
+  }
+
+  // Optional "show your working". Opt-in, because the person who doubts a
+  // number is usually the friend WITHOUT the app — but it roughly doubles the
+  // message, so the default stays short.
+  if (working?.people?.length) {
+    L.push("");
+    L.push("HOW THIS WAS WORKED OUT");
+    L.push("Everyone's share of every expense is added up. Debts that point both ways cancel out, so the group makes fewer payments. Nobody pays a different amount than they owe — only who they hand it to changes.");
+    L.push("");
+    working.people.forEach((p) => {
+      const verb = p.net > 0.005 ? "pays" : p.net < -0.005 ? "gets back" : "square";
+      const amt = Math.abs(p.net) < 0.005 ? "" : ` ${computed(Math.abs(p.net), baseCurrency)}`;
+      const share = p.count
+        ? `share of ${p.count} expense${p.count === 1 ? "" : "s"} ${computed(p.owesTotal, baseCurrency)}`
+        : `no shares of their own`;
+      L.push(`${p.name}: ${share} − paid for others ${computed(p.paidTotal, baseCurrency)} → ${verb}${amt}`);
+    });
+    if (working.directCount) {
+      L.push("");
+      // only claim a reduction when there was one
+      L.push(working.directCount > transfers.length
+        ? `That's ${working.directCount} separate debts between people, settled with just ${transfers.length} payment${transfers.length === 1 ? "" : "s"}.`
+        : `No two people owe each other here, so this is already the fewest payments possible.`);
     }
   }
 

@@ -4,6 +4,7 @@ import { currencySymbol, formatMoney, padIndex } from "../lib/format";
 import {
   statusForExpense, toHome, buildAliasMap, resolveAlias, eraFor, grandTotal,
   loadSettlementData, buildContributions, planSummary, groupDateName, sortLogEntries,
+  directTransfers,
   loadGroups, createGroup, setGroupExpenses, renameGroup, ungroup,
   freezeGroup, unfreezeGroup, settleTransfer, unsettleTransfer,
 } from "../lib/balances";
@@ -79,6 +80,183 @@ function RosterFace({ person: p, guest, fixed, caption, nudge, onClick }) {
         </span>
       )}
     </div>
+  );
+}
+
+// ── "how this was worked out" ────────────────────────────────────────────
+// The summary is the most magic thing in the app: it turns a pile of expenses
+// into "Boat → You ₩259,551" with no visible derivation, and an unexplained
+// number is socially expensive between friends.
+//
+// 🔑 Written for the FRIEND WHO DOESN'T HAVE THE APP and thinks their number
+// looks wrong — so it shows THEIR arithmetic, in plain words, rather than
+// describing the algorithm. A prose page saying "we minimise transfers" answers
+// a question nobody is asking.
+//
+// It computes nothing new: the same `contribs` and the same scope filter that
+// planSummary uses, so this page cannot drift from the plan it explains.
+function ExplainPanel({ title, contribs, scope, plan, baseCur, nameOf, onClose }) {
+  const [openPid, setOpenPid] = useState(null);
+  const [showDirect, setShowDirect] = useState(false);
+  useBackLayer(true, onClose, BACK_LEVEL.SHEET);
+
+  // EXACTLY planSummary's filter — copied deliberately, not approximated.
+  const inScope = (contribs || []).filter((c) => !c.settled && (!scope || scope(c)));
+
+  const byPerson = {};
+  const touch = (id) => (byPerson[id] = byPerson[id] || { id, lines: [], owes: 0, paid: 0, owesKeys: new Set() });
+  inScope.forEach((c) => {
+    const d = touch(c.debtor), r = touch(c.creditor);
+    // ⚠️ the count is of expenses they have a SHARE in, not every expense they
+    // appear in — a payer who owes nothing was reading "share of 2 expenses ₩0"
+    d.owes += c.base; d.lines.push({ c, sign: 1 }); d.owesKeys.add(c.expenseId || c.transferId);
+    r.paid += c.base; r.lines.push({ c, sign: -1 });
+  });
+  const people = Object.values(byPerson)
+    .map((p) => ({ ...p, net: p.owes - p.paid, count: p.owesKeys.size }))
+    .sort((a, b) => b.net - a.net);
+
+  const owedTotal = people.reduce((s, p) => s + Math.max(0, p.net), 0);
+  const backTotal = people.reduce((s, p) => s + Math.max(0, -p.net), 0);
+  const direct = directTransfers(inScope, null, "base");
+
+  const M = ({ n }) => <Money n={n} cur={baseCur} style={{ fontSize: 14 }} />;
+  const label = { fontSize: 13, color: "var(--text-2)" };
+
+  return (
+    <div style={{ position: "absolute", inset: 0, background: "var(--bg)", zIndex: 60, display: "flex", flexDirection: "column", animation: "fadeIn 140ms ease" }}>
+      <div style={{ height: 54, flex: "none", display: "flex", alignItems: "center", padding: "0 12px", gap: 8 }}>
+        <button onClick={onClose} style={{ width: 40, height: 40, fontSize: 20, borderRadius: "50%" }}>←</button>
+        <div style={{ flex: 1, textAlign: "center" }}><span className="legend">How this works</span></div>
+        <span style={{ width: 40 }} />
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto", padding: "0 24px 60px" }}>
+        <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 6 }}>How this was worked out</div>
+        <div style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--text-2)", marginBottom: 26 }}>
+          Everyone’s share of every expense is added up. Debts that point both ways cancel
+          out, so the group makes as few payments as possible.{" "}
+          <span style={{ color: "var(--text)" }}>Nobody pays a different amount than they owe — only who they hand it to changes.</span>
+        </div>
+
+        {/* 1 — each person's arithmetic, drillable to the expense */}
+        <div className="legend" style={{ marginBottom: 10 }}>1 · What each person owes</div>
+        {people.map((p) => {
+          const open = openPid === p.id;
+          const verb = p.net > 0.005 ? "pays" : p.net < -0.005 ? "gets back" : "square";
+          return (
+            <div key={p.id} style={{ background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "var(--r-card)", padding: "13px 16px", marginBottom: 8 }}>
+              <div onClick={() => setOpenPid(open ? null : p.id)} style={{ cursor: "pointer" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span style={{ fontSize: 15, fontWeight: 600 }}>{nameOf(p.id)}</span>
+                  <Chevron open={open} />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+                  <span style={label}>{p.count ? `share of ${p.count} expense${p.count === 1 ? "" : "s"}` : "no shares of their own"}</span><M n={p.owes} />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+                  <span style={label}>paid for others</span>
+                  <span style={{ display: "flex", alignItems: "baseline" }}><span style={{ fontSize: 14, color: "var(--text-2)", marginRight: 1 }}>−</span><M n={p.paid} /></span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0 0", marginTop: 6, borderTop: "1px solid var(--hairline-3)" }}>
+                  <span style={{ ...label, color: "var(--text)", fontWeight: 600 }}>{verb}</span>
+                  {verb === "square" ? <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>nothing</span> : <M n={Math.abs(p.net)} />}
+                </div>
+              </div>
+              {open && (
+                <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--hairline-3)" }}>
+                  {p.lines.map((l, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "6px 0" }}>
+                      <span style={{ minWidth: 0, fontSize: 12.5, color: "var(--text-2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {l.c.expense?.title || "summary transfer"}
+                        <span className="mono" style={{ fontSize: 9, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-4)", marginLeft: 6 }}>
+                          {l.sign > 0 ? "their share" : `${nameOf(l.c.debtor)}’s share · they paid`}
+                        </span>
+                      </span>
+                      <span style={{ display: "flex", alignItems: "baseline", flex: "none" }}>
+                        {l.sign < 0 && <span style={{ fontSize: 13, color: "var(--text-2)", marginRight: 1 }}>−</span>}
+                        <Money n={l.c.base} cur={baseCur} style={{ fontSize: 13 }} />
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {/* 2 — the check anyone can do on the spot */}
+        <div className="legend" style={{ margin: "24px 0 10px" }}>2 · It balances</div>
+        <div style={{ background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "var(--r-card)", padding: "13px 16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+            <span style={label}>owed by people who owe</span><M n={owedTotal} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+            <span style={label}>due to people who are owed</span><M n={backTotal} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0 0", marginTop: 6, borderTop: "1px solid var(--hairline-3)" }}>
+            <span style={{ ...label, color: "var(--text)", fontWeight: 600 }}>difference</span>
+            <span className="mono" style={{ fontSize: 12, color: Math.abs(owedTotal - backTotal) < 0.01 ? "var(--settled)" : "var(--danger)" }}>
+              {Math.abs(owedTotal - backTotal) < 0.01 ? "0 ✓" : (owedTotal - backTotal).toFixed(2)}
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-3)", lineHeight: 1.5, marginTop: 10 }}>
+            These two are always the same number. If they ever weren’t, the app would be wrong.
+          </div>
+        </div>
+
+        {/* 3 — minimisation, performed rather than described */}
+        <div className="legend" style={{ margin: "24px 0 10px" }}>3 · Who pays who</div>
+        <div style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--text-2)", marginBottom: 12 }}>
+          {direct.length > plan.transfers.length ? (
+            <>
+              There {direct.length === 1 ? "is" : "are"} <span style={{ color: "var(--text)" }}>{direct.length} separate debt{direct.length === 1 ? "" : "s"}</span> between people here.
+              Cancelling the ones that point both ways settles all of them with just{" "}
+              <span style={{ color: "var(--text)" }}>{plan.transfers.length} payment{plan.transfers.length === 1 ? "" : "s"}</span>.
+            </>
+          ) : (
+            // equal counts: nothing cancelled, and claiming otherwise would be a lie
+            <>Nothing cancels out here — no two people owe each other — so this is already
+              the fewest payments possible:{" "}
+              <span style={{ color: "var(--text)" }}>{plan.transfers.length} payment{plan.transfers.length === 1 ? "" : "s"}</span>.</>
+          )}
+        </div>
+        <div style={{ background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "var(--r-card)", padding: "6px 16px", marginBottom: 10 }}>
+          {plan.transfers.map((t, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "9px 0", borderBottom: i < plan.transfers.length - 1 ? "1px solid var(--hairline-3)" : "none" }}>
+              <span style={{ fontSize: 13.5, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{nameOf(t.from)} → {nameOf(t.to)}</span>
+              <M n={t.amount} />
+            </div>
+          ))}
+        </div>
+        <button onClick={() => setShowDirect((v) => !v)} className="mono" style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)", padding: "4px 0" }}>
+          {showDirect ? "hide" : "show"} the {direct.length} original debt{direct.length === 1 ? "" : "s"}
+        </button>
+        {showDirect && (
+          <div style={{ border: "1px solid var(--hairline)", borderRadius: "var(--r-card)", padding: "6px 16px", marginTop: 8 }}>
+            {direct.map((t, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 0", borderBottom: i < direct.length - 1 ? "1px solid var(--hairline-3)" : "none" }}>
+                <span style={{ fontSize: 12.5, color: "var(--text-2)", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{nameOf(t.from)} → {nameOf(t.to)}</span>
+                <Money n={t.amount} cur={baseCur} style={{ fontSize: 12.5 }} />
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ fontSize: 11.5, color: "var(--text-4)", lineHeight: 1.55, marginTop: 26 }}>{title}</div>
+      </div>
+    </div>
+  );
+}
+
+// A quiet ⓘ — the summary is the one place in the app worth explaining.
+function InfoDot({ onClick }) {
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      aria-label="How this was worked out"
+      style={{ width: 20, height: 20, borderRadius: "50%", border: "1px solid var(--hairline)", color: "var(--text-3)", fontSize: 11, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", flex: "none", fontStyle: "italic", fontFamily: "Georgia, serif" }}
+    >i</button>
   );
 }
 
@@ -200,6 +378,9 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
   const [nameDraft, setNameDraft] = useState("");
   const [confirmUngroup, setConfirmUngroup] = useState(null);
   const [shareOpen, setShareOpen] = useState(false);
+  const [includeWorking, setIncludeWorking] = useState(false);
+  // { label, scope, plan } — what the explain panel is explaining
+  const [explain, setExplain] = useState(null);
   const [shareMsg, setShareMsg] = useState(null);
 
   const archiving = useRef(false); // skip self-reload during archive-close so the button doesn't flip before the pop
@@ -541,9 +722,31 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
     }));
     // ⚠️ Deliberately NOT included: anyone's payment_note. It's semi-private and
     // this text is headed for a group chat. Only add it if Phoom asks.
+    // "show your working" — the same arithmetic the ⓘ panel renders, flattened
+    // to text. Built from the identical filter planSummary uses, so the message
+    // and the screen can't disagree.
+    let working = null;
+    if (includeWorking) {
+      const inScope = contribs.filter((c) => !c.settled && scope(c));
+      const acc = {};
+      const touch = (id) => (acc[id] = acc[id] || { id, owesTotal: 0, paidTotal: 0, keys: new Set() });
+      inScope.forEach((c) => {
+        const d = touch(c.debtor), r = touch(c.creditor);
+        // counts expenses they have a SHARE in — see the same note in ExplainPanel
+        d.owesTotal += c.base; d.keys.add(c.expenseId || c.transferId);
+        r.paidTotal += c.base;
+      });
+      working = {
+        people: Object.values(acc)
+          .map((p) => ({ name: nameOf(p.id), owesTotal: p.owesTotal, paidTotal: p.paidTotal, net: p.owesTotal - p.paidTotal, count: p.keys.size }))
+          .sort((a, b) => b.net - a.net),
+        directCount: directTransfers(inScope, null, "base").length,
+      };
+    }
+
     const common = { name: rec?.name, dateRange: dateLabel, baseCurrency: base, era, expenses };
     return {
-      text: buildRecordText({ ...common, transfers, settledUp: transfers.length === 0 }),
+      text: buildRecordText({ ...common, transfers, settledUp: transfers.length === 0, working }),
       csv: buildRecordCsv(common),
     };
   }
@@ -682,7 +885,16 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
           <div style={{ padding: "22px 24px 0" }}>
             <div style={{ background: "var(--surface)", border: "1px solid var(--hairline)", borderRadius: "var(--r-card)", padding: "14px 16px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <span className="legend">Who pays who</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span className="legend">Who pays who</span>
+                  {checkPlan.transfers.length > 0 && (
+                    <InfoDot onClick={() => setExplain({
+                      label: `${rec?.name || "This record"} · ${checked.size} expense${checked.size === 1 ? "" : "s"} selected`,
+                      scope: (c) => checked.has(c.expenseId),
+                      plan: checkPlan,
+                    })} />
+                  )}
+                </span>
                 <span className="mono" style={{ fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)" }}>
                   {checkPlan.transfers.length === 1 ? "1 payment" : `${checkPlan.transfers.length} payments`}
                 </span>
@@ -775,7 +987,16 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
                   {/* half 1 — the summary */}
                   <div style={{ borderTop: "1px solid var(--hairline-3)", padding: "0 15px" }}>
                     <div onClick={() => collapse(`${g.id}:sum`)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", cursor: "pointer" }}>
-                      <span className="legend">Summary</span>
+                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span className="legend">Summary</span>
+                        {!g.frozen && g.plan?.transfers?.length > 0 && (
+                          <InfoDot onClick={() => setExplain({
+                            label: `${rec?.name || "This record"} · ${g.label}`,
+                            scope: (c) => new Set(g.exps.map((e) => e.id)).has(c.expenseId),
+                            plan: g.plan,
+                          })} />
+                        )}
+                      </span>
                       <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span className="mono" style={{ fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-3)" }}>
                           {g.rows.length === 1 ? "1 payment" : `${g.rows.length} payments`}
@@ -822,6 +1043,18 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
         </div>)}
       </div>
 
+      {explain && (
+        <ExplainPanel
+          title={explain.label}
+          contribs={contribs}
+          scope={explain.scope}
+          plan={explain.plan}
+          baseCur={base}
+          nameOf={nameOf}
+          onClose={() => setExplain(null)}
+        />
+      )}
+
       {/* share sheet — two formats behind one entry point */}
       {shareOpen && (
         <div onClick={() => setShareOpen(false)} style={{ position: "absolute", inset: 0, background: "var(--scrim-sheet)", zIndex: 50, animation: "fadeIn 140ms ease" }}>
@@ -836,6 +1069,15 @@ export default function RecordingDetail({ recordingId, people, onAddExpense, onO
               Send summary
               <div style={{ fontSize: 11.5, fontWeight: 500, opacity: 0.85, marginTop: 1 }}>who owes who + the expense list, as a message</div>
             </button>
+
+            {/* opt-in: roughly doubles the message, so the default stays short */}
+            <div onClick={() => setIncludeWorking((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 11, padding: "10px 4px 14px", cursor: "pointer" }}>
+              <span style={{ width: 22, height: 22, borderRadius: 7, flex: "none", border: includeWorking ? "none" : "1.5px solid var(--hairline)", background: includeWorking ? "var(--settled)" : "var(--bg)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>{includeWorking ? "✓" : ""}</span>
+              <span style={{ minWidth: 0 }}>
+                <span style={{ fontSize: 13.5 }}>Include the working</span>
+                <span style={{ display: "block", fontSize: 11.5, color: "var(--text-3)", marginTop: 1 }}>each person’s share, minus what they paid — for anyone who wants to check</span>
+              </span>
+            </div>
 
             <button onClick={doDownloadCsv} style={{ width: "100%", height: 52, borderRadius: 14, background: "var(--bg)", border: "1px solid var(--hairline)", fontSize: 15, fontWeight: 600, textAlign: "left", padding: "0 18px" }}>
               Download CSV
