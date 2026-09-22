@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node tests/balances-core.test.mjs"
+    "test": "node tests/balances-core.test.mjs",
+    "dev:sandbox": "vite --mode sandbox"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",

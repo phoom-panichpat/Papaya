@@ -1,7 +1,11 @@
 node_modules
 dist
+# every env file EXCEPT the committed template. A sandbox/staging project's
+# keys must never land in the repo, and `.env` + `.env.local` alone did not
+# cover `.env.sandbox`.
 .env
-.env.local
+.env.*
+!.env.example
 .DS_Store
 *.log
 .claude/settings.local.json
