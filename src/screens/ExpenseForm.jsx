@@ -70,6 +70,18 @@ function ChainBtn({ onClick }) {
   );
 }
 
+// Round to cents. A % item's amount is derived (subtotal × pct), so it gets
+// rounded once here; "the rest" is total − carve-outs, so it absorbs the
+// remainder and the items still add up to the subtotal exactly.
+const round2 = (n) => Math.round(n * 100) / 100;
+const trimNum = (n) => String(round2(n));
+
+// The item's amount in the OTHER unit (= ฿1,500 / = 50%) — faded, so a
+// percentage split can be checked at a glance and survives a reopen as a hint.
+function UnitHint({ children }) {
+  return <span className="mono" style={{ fontSize: 11, color: "var(--text-3)", whiteSpace: "nowrap" }}>{children}</span>;
+}
+
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "back"];
 
 export default function ExpenseForm({ people, onClose, forceRecordingId = null, editExpenseId = null }) {
@@ -281,7 +293,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
     split: [...splitIds].sort(),
     rest: [...restMembers].sort(),
     who: [...whosIn].sort(),
-    items: items.map((i) => ({ l: i.label, a: i.amount, m: [...i.members].sort() })),
+    items: items.map((i) => ({ l: i.label, a: i.amount, u: i.unit, m: [...i.members].sort() })),
   });
   const cleanSig = useRef(null);
   useEffect(() => {
@@ -300,13 +312,18 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   useBackLayer(currencyOpen, () => setCurrencyOpen(false));
   useBackLayer(confirmBack, () => setConfirmBack(false)); // = "Keep editing"
 
-  const carveTotal = items.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
+  // An item's money. A "%" item stores the typed percentage in `amount` and
+  // derives its money from the subtotal on every render — so changing the total
+  // re-scales it. Only the derived amount is ever saved; the % is input only.
+  const itemAmt = (it) => (it.unit === "pct" ? round2((total * (parseFloat(it.amount) || 0)) / 100) : parseFloat(it.amount) || 0);
+  const pctOf = (a) => (total > 0 ? trimNum((a / total) * 100) : null);
+  const carveTotal = items.reduce((s, it) => s + itemAmt(it), 0);
   const restAmount = total - carveTotal;
   const balanced = restAmount >= -0.001;
   const slicedValid =
     balanced &&
     (restAmount <= 0.001 || restMembers.size > 0) &&
-    items.every((it) => { const a = parseFloat(it.amount) || 0; return a <= 0 || it.members.size > 0; });
+    items.every((it) => { const a = itemAmt(it); return a <= 0 || it.members.size > 0; });
   const canSave = total > 0 && paidBy && !saving && (sliced ? slicedValid : splitIds.size > 0);
 
   const shares = (() => {
@@ -321,7 +338,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
         restMembers.forEach((id) => add(id, per));
       }
       items.forEach((it) => {
-        const a = parseFloat(it.amount) || 0;
+        const a = itemAmt(it);
         if (it.members.size && a > 0) {
           const per = (a * feeScale) / it.members.size;
           it.members.forEach((id) => add(id, per));
@@ -402,6 +419,15 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   }
   function removeItem(id) {
     setItems((l) => l.filter((it) => it.id !== id));
+  }
+  // Flip an item between ฿ and %, converting the value so nothing typed is lost.
+  function toggleUnit(id) {
+    setItems((l) => l.map((it) => {
+      if (it.id !== id) return it;
+      if (it.unit === "pct") return { ...it, unit: "amt", amount: it.amount === "" ? "" : trimNum(itemAmt(it)) };
+      const a = parseFloat(it.amount) || 0;
+      return { ...it, unit: "pct", amount: a > 0 && total > 0 ? trimNum((a / total) * 100) : "" };
+    }));
   }
   function updateItem(id, key, val) {
     setItems((l) => l.map((it) => (it.id === id ? { ...it, [key]: val } : it)));
@@ -490,7 +516,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
     if (sliced) {
       await insertItem(null, restAmount, true, restMembers);
       for (const it of items) {
-        const a = parseFloat(it.amount) || 0;
+        const a = itemAmt(it);
         if (a <= 0 || !it.members.size) continue;
         await insertItem(it.label.trim() || null, a, false, it.members);
       }
@@ -714,7 +740,10 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
                   <Cluster ids={[...restMembers]} people={localPeople} />
                   <span className="legend">{restMembers.size} in</span>
                 </span>
-                {restMembers.size > 0 && <ChainBtn onClick={(e) => { e.stopPropagation(); chainItem("rest"); }} />}
+                <span style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
+                  {pctOf(restAmount) !== null && items.length > 0 && <UnitHint>{pctOf(restAmount)}%</UnitHint>}
+                  {restMembers.size > 0 && <ChainBtn onClick={(e) => { e.stopPropagation(); chainItem("rest"); }} />}
+                </span>
               </div>
             </div>
 
@@ -723,7 +752,15 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
               <div key={it.id} style={itemCard}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <input value={it.label} onChange={(e) => updateItem(it.id, "label", e.target.value)} onFocus={() => setKeypadOpen(false)} placeholder="Item" style={{ flex: 1, background: "none", border: "none", outline: "none", fontSize: 15, fontWeight: 600 }} />
-                  <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(currency)}</span>
+                  <button
+                    onClick={() => toggleUnit(it.id)}
+                    title={it.unit === "pct" ? "Enter as an amount" : "Enter as a percentage"}
+                    aria-label={it.unit === "pct" ? "Switch to amount" : "Switch to percentage"}
+                    className="mono"
+                    style={{ flex: "none", minWidth: 26, height: 24, padding: "0 6px", borderRadius: 6, border: "1px solid var(--hairline)", background: "var(--bg)", fontSize: 12, color: "var(--text-2)" }}
+                  >
+                    {it.unit === "pct" ? "%" : currencySymbol(currency)}
+                  </button>
                   <input value={it.amount} onChange={(e) => updateItem(it.id, "amount", e.target.value.replace(/[^0-9.]/g, ""))} onFocus={() => setKeypadOpen(false)} inputMode="decimal" placeholder="0" style={{ width: 68, textAlign: "right", background: "none", border: "none", outline: "none", fontFamily: "var(--font-money)", fontWeight: 800, fontSize: 15 }} />
                   <button onClick={() => removeItem(it.id)} style={{ width: 24, height: 24, borderRadius: "50%", color: "var(--text-3)", fontSize: 13, flex: "none" }}>✕</button>
                 </div>
@@ -738,7 +775,16 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
                       <span className="legend" style={{ color: "var(--text-3)" }}>+ who's in?</span>
                     )}
                   </span>
-                  {it.members.size > 0 && <ChainBtn onClick={(e) => { e.stopPropagation(); chainItem(it.id); }} />}
+                  <span style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
+                    {itemAmt(it) > 0 && total > 0 && (
+                      <UnitHint>
+                        {it.unit === "pct"
+                          ? `= ${currencySymbol(currency)}${itemAmt(it).toLocaleString("en-US", { maximumFractionDigits: 2 })}`
+                          : `= ${pctOf(itemAmt(it))}%`}
+                      </UnitHint>
+                    )}
+                    {it.members.size > 0 && <ChainBtn onClick={(e) => { e.stopPropagation(); chainItem(it.id); }} />}
+                  </span>
                 </div>
               </div>
             ))}

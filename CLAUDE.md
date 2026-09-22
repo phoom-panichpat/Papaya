@@ -825,6 +825,16 @@ The Share control **writes** `share_token`, so this is the §10.7 case, not the 
 
 ---
 
-## 14. 🔨 QUEUED — SPLIT BY PERCENTAGE (Phoom, 2026-09-23)
+## 14. ✅ SPLIT BY PERCENTAGE — BUILT + CLAUDE-VERIFIED LIVE (2026-09-23, Claude Code/Opus 5.5; `npm test` 154/154 untouched, build clean, NO migration). ⚠️ Not yet pushed; needs Phoom's phone check.
 
-Scenario: dad's team dinner — leader pays 50%, managers share 30%, everyone else shares 20%. **The engine already handles this** (item "Leader" [dad] + item "Managers" [managers] + the rest [team] auto-fills). What's missing is only a way to **type an item's amount as a % of the subtotal**. Decisions: per-item ฿/% toggle in `ExpenseForm` sliced mode; a % item's amount is derived live from the subtotal (so changing the total re-scales it); **saved as a plain amount — no migration, money core untouched, tests stay 154/154**; edit mode reopens items in ฿ with a faded "= 50%" hint (the mode isn't persisted). Service charge still spreads proportionally, so percentages hold on the charged total too. Paste block handed to Phoom for GLM 5.2 (🟠).
+Scenario (Phoom's dad's team dinner): leader pays 50%, managers share 30%, everyone else shares 20%. **The engine already handled it** — item "Leader" [dad] + item "Managers" [managers] + the rest [team]. What was missing was only a way to TYPE an item as a % of the subtotal. `ExpenseForm.jsx` only:
+- Each carve-out item has an optional `unit` (`"pct"`, or absent = amount). In % mode `it.amount` holds the typed percentage. **One helper, `itemAmt(it)`, is the only way the form reads an item's money** (carveTotal, slicedValid, the per-person peek, save) — a new call site reading `parseFloat(it.amount)` directly would silently treat "50" as ₩50. grep for it.
+- A % item's money = `round2(subtotal × pct / 100)`, derived every render, so changing the total re-scales it. Rounding to cents is safe because "the rest" = total − carve-outs absorbs the remainder, so items still add to the subtotal exactly.
+- The currency symbol in front of an item's amount is now a **฿/% toggle chip**; switching converts the value (50% ↔ 15000) so nothing typed is lost. A faded mono `UnitHint` shows the other unit ("= ₩15,000" / "= 50%"); "the rest" shows its % once any item exists.
+- **Saved as a plain amount** — money core, DB, balances, summaries, share links all untouched. The % mode is NOT persisted: edit mode reopens items in ฿, with the "= 50%" hint. `unit` is in the dirty-check signature, so flipping it counts as an edit.
+- Over 100% needed no new validator: the rest goes negative → red, "Items exceed total", Save disabled (its hint reads e.g. "-10%", which is informative).
+- Service charge still spreads proportionally via `feeScale`, so a 50% item stays 50% of the charged total.
+
+**Verified live** (isolated anonymous guest, `is_anonymous` checked first): ₩30,000 → Leader 50% = ₩15,000, Managers 30% = ₩9,000, rest ₩6,000 · 20% · total → ₩300,000 re-scaled to ₩150,000 / ₩90,000 / ₩60,000 · toggling Leader back to ₩ showed 150000 + "= 50%" · 60% managers → over-100% blocked · saved → DB rows 15000 / 9000 / 6000 with the right members; expense detail Rui ₩2,000, Ana ₩11,000 · Edit reopened with "20% / = 50% / = 30%" and backing out with no changes exited without a discard prompt.
+
+**Pre-existing dev-only nit found on the way (not fixed):** Home's "add demo data" doesn't refresh App's `people`, so right after seeding, pickers show only "You" and names render "—" until a page reload. Affects the empty-account demo button only.
