@@ -772,14 +772,14 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
                     {total > 0 && (() => {
                       // Tap the faint "= 10%" to type a percentage instead of an amount.
                       // Deliberately styled as the hint it replaced — quiet, not a control.
-                      const v = it.unit === "pct" ? (it.pct ?? "") : (pctOf(itemAmt(it)) ?? "");
+                      const v = it.unit === "pct" ? (it.pct ?? "") : (itemAmt(it) > 0 ? pctOf(itemAmt(it)) : "");
                       return (
                         <label onClick={(e) => e.stopPropagation()} className="mono" style={{ display: "flex", alignItems: "center", fontSize: 11, color: "var(--text-3)", whiteSpace: "nowrap", cursor: "text" }}>
                           ={"\u00a0"}
                           <input
                             value={v}
                             onChange={(e) => setItemPct(it.id, e.target.value.replace(/[^0-9.]/g, ""))}
-                            onFocus={(e) => { setKeypadOpen(false); e.target.select(); }}
+                            onFocus={() => setKeypadOpen(false)}
                             inputMode="decimal"
                             placeholder="0"
                             aria-label="Percentage of the total"
