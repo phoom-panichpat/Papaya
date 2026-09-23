@@ -82,6 +82,15 @@ function UnitHint({ children }) {
   return <span className="mono" style={{ fontSize: 11, color: "var(--text-3)", whiteSpace: "nowrap" }}>{children}</span>;
 }
 
+// Put the caret at the END of an input on every tap, so the number can be
+// backspaced straight away. Deferred a tick because the browser positions the
+// caret itself AFTER focus/click fire — setting it synchronously gets overwritten.
+// A collapsed caret (not a selection) so Android doesn't pop its Cut/Copy bar.
+function caretToEnd(e) {
+  const el = e.currentTarget;
+  setTimeout(() => { const n = el.value.length; try { el.setSelectionRange(n, n); } catch { /* not a text input */ } }, 0);
+}
+
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "back"];
 
 export default function ExpenseForm({ people, onClose, forceRecordingId = null, editExpenseId = null }) {
@@ -428,7 +437,8 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
     setItems((l) => l.map((it) => (it.id === id ? { ...it, unit: "amt", amount: v } : it)));
   }
   function setItemPct(id, v) {
-    setItems((l) => l.map((it) => (it.id === id ? { ...it, unit: "pct", pct: v } : it)));
+    const capped = parseFloat(v) > 100 ? "100" : v; // a share can't exceed the whole
+    setItems((l) => l.map((it) => (it.id === id ? { ...it, unit: "pct", pct: capped } : it)));
   }
   function updateItem(id, key, val) {
     setItems((l) => l.map((it) => (it.id === id ? { ...it, [key]: val } : it)));
@@ -754,7 +764,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <input value={it.label} onChange={(e) => updateItem(it.id, "label", e.target.value)} onFocus={() => setKeypadOpen(false)} placeholder="Item" style={{ flex: 1, minWidth: 0, width: 0, background: "none", border: "none", outline: "none", fontSize: 15, fontWeight: 600 }} />
                   <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(currency)}</span>
-                  <input value={it.unit === "pct" ? (itemAmt(it) ? trimNum(itemAmt(it)) : "") : it.amount} onChange={(e) => setItemAmount(it.id, e.target.value.replace(/[^0-9.]/g, ""))} onFocus={() => setKeypadOpen(false)} inputMode="decimal" placeholder="0" style={{ width: 68, textAlign: "right", background: "none", border: "none", outline: "none", fontFamily: "var(--font-money)", fontWeight: 800, fontSize: 15 }} />
+                  <input value={it.unit === "pct" ? (itemAmt(it) ? trimNum(itemAmt(it)) : "") : it.amount} onChange={(e) => setItemAmount(it.id, e.target.value.replace(/[^0-9.]/g, ""))} onFocus={(e) => { setKeypadOpen(false); caretToEnd(e); }} onClick={caretToEnd} inputMode="decimal" placeholder="0" style={{ width: 68, textAlign: "right", background: "none", border: "none", outline: "none", fontFamily: "var(--font-money)", fontWeight: 800, fontSize: 15 }} />
                   <button onClick={() => removeItem(it.id)} style={{ width: 24, height: 24, borderRadius: "50%", color: "var(--text-3)", fontSize: 13, flex: "none" }}>✕</button>
                 </div>
                 <div onClick={() => setItemPicker(it.id)} style={{ marginTop: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -779,7 +789,8 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
                           <input
                             value={v}
                             onChange={(e) => setItemPct(it.id, e.target.value.replace(/[^0-9.]/g, ""))}
-                            onFocus={() => setKeypadOpen(false)}
+                            onFocus={(e) => { setKeypadOpen(false); caretToEnd(e); }}
+                            onClick={caretToEnd}
                             inputMode="decimal"
                             placeholder="0"
                             aria-label="Percentage of the total"
