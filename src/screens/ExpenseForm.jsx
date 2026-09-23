@@ -751,9 +751,18 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
             {items.map((it) => (
               <div key={it.id} style={itemCard}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input value={it.label} onChange={(e) => updateItem(it.id, "label", e.target.value)} onFocus={() => setKeypadOpen(false)} placeholder="Item" style={{ flex: 1, background: "none", border: "none", outline: "none", fontSize: 15, fontWeight: 600 }} />
+                  <input value={it.label} onChange={(e) => updateItem(it.id, "label", e.target.value)} onFocus={() => setKeypadOpen(false)} placeholder="Item" style={{ flex: 1, minWidth: 0, width: 0, background: "none", border: "none", outline: "none", fontSize: 15, fontWeight: 600 }} />
                   <button
-                    onClick={() => toggleUnit(it.id)}
+                    // preventDefault on press keeps focus in the input being typed in,
+                    // so the phone keyboard doesn't drop when switching ฿ ↔ %. If the
+                    // keyboard was up, focus moves to THIS item's amount so typing
+                    // continues where the new unit applies.
+                    onPointerDown={(e) => e.preventDefault()}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={(e) => {
+                      toggleUnit(it.id);
+                      if (document.activeElement?.tagName === "INPUT") e.currentTarget.parentElement.querySelector("[data-amount-input]")?.focus();
+                    }}
                     title={it.unit === "pct" ? "Enter as an amount" : "Enter as a percentage"}
                     aria-label={it.unit === "pct" ? "Switch to amount" : "Switch to percentage"}
                     className="mono"
@@ -761,7 +770,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
                   >
                     {it.unit === "pct" ? "%" : currencySymbol(currency)}
                   </button>
-                  <input value={it.amount} onChange={(e) => updateItem(it.id, "amount", e.target.value.replace(/[^0-9.]/g, ""))} onFocus={() => setKeypadOpen(false)} inputMode="decimal" placeholder="0" style={{ width: 68, textAlign: "right", background: "none", border: "none", outline: "none", fontFamily: "var(--font-money)", fontWeight: 800, fontSize: 15 }} />
+                  <input data-amount-input value={it.amount} onChange={(e) => updateItem(it.id, "amount", e.target.value.replace(/[^0-9.]/g, ""))} onFocus={() => setKeypadOpen(false)} inputMode="decimal" placeholder="0" style={{ width: 68, textAlign: "right", background: "none", border: "none", outline: "none", fontFamily: "var(--font-money)", fontWeight: 800, fontSize: 15 }} />
                   <button onClick={() => removeItem(it.id)} style={{ width: 24, height: 24, borderRadius: "50%", color: "var(--text-3)", fontSize: 13, flex: "none" }}>✕</button>
                 </div>
                 <div onClick={() => setItemPicker(it.id)} style={{ marginTop: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
