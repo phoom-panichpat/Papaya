@@ -293,7 +293,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
     split: [...splitIds].sort(),
     rest: [...restMembers].sort(),
     who: [...whosIn].sort(),
-    items: items.map((i) => ({ l: i.label, a: i.amount, u: i.unit, m: [...i.members].sort() })),
+    items: items.map((i) => ({ l: i.label, a: i.amount, u: i.unit, p: i.pct, m: [...i.members].sort() })),
   });
   const cleanSig = useRef(null);
   useEffect(() => {
@@ -315,7 +315,7 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   // An item's money. A "%" item stores the typed percentage in `amount` and
   // derives its money from the subtotal on every render — so changing the total
   // re-scales it. Only the derived amount is ever saved; the % is input only.
-  const itemAmt = (it) => (it.unit === "pct" ? round2((total * (parseFloat(it.amount) || 0)) / 100) : parseFloat(it.amount) || 0);
+  const itemAmt = (it) => (it.unit === "pct" ? round2((total * (parseFloat(it.pct) || 0)) / 100) : parseFloat(it.amount) || 0);
   const pctOf = (a) => (total > 0 ? trimNum((a / total) * 100) : null);
   const carveTotal = items.reduce((s, it) => s + itemAmt(it), 0);
   const restAmount = total - carveTotal;
@@ -420,14 +420,15 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
   function removeItem(id) {
     setItems((l) => l.filter((it) => it.id !== id));
   }
-  // Flip an item between ฿ and %, converting the value so nothing typed is lost.
-  function toggleUnit(id) {
-    setItems((l) => l.map((it) => {
-      if (it.id !== id) return it;
-      if (it.unit === "pct") return { ...it, unit: "amt", amount: it.amount === "" ? "" : trimNum(itemAmt(it)) };
-      const a = parseFloat(it.amount) || 0;
-      return { ...it, unit: "pct", amount: a > 0 && total > 0 ? trimNum((a / total) * 100) : "" };
-    }));
+  // An item has two inputs — its amount and its % of the subtotal — and
+  // whichever was typed in last is the source of truth (`unit`). The other one
+  // just DISPLAYS the derived value, so the two never write to each other (no
+  // update loop, no cursor jumping in the field being typed in).
+  function setItemAmount(id, v) {
+    setItems((l) => l.map((it) => (it.id === id ? { ...it, unit: "amt", amount: v } : it)));
+  }
+  function setItemPct(id, v) {
+    setItems((l) => l.map((it) => (it.id === id ? { ...it, unit: "pct", pct: v } : it)));
   }
   function updateItem(id, key, val) {
     setItems((l) => l.map((it) => (it.id === id ? { ...it, [key]: val } : it)));
@@ -752,25 +753,8 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
               <div key={it.id} style={itemCard}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <input value={it.label} onChange={(e) => updateItem(it.id, "label", e.target.value)} onFocus={() => setKeypadOpen(false)} placeholder="Item" style={{ flex: 1, minWidth: 0, width: 0, background: "none", border: "none", outline: "none", fontSize: 15, fontWeight: 600 }} />
-                  <button
-                    // preventDefault on press keeps focus in the input being typed in,
-                    // so the phone keyboard doesn't drop when switching ฿ ↔ %. If the
-                    // keyboard was up, focus moves to THIS item's amount so typing
-                    // continues where the new unit applies.
-                    onPointerDown={(e) => e.preventDefault()}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={(e) => {
-                      toggleUnit(it.id);
-                      if (document.activeElement?.tagName === "INPUT") e.currentTarget.parentElement.querySelector("[data-amount-input]")?.focus();
-                    }}
-                    title={it.unit === "pct" ? "Enter as an amount" : "Enter as a percentage"}
-                    aria-label={it.unit === "pct" ? "Switch to amount" : "Switch to percentage"}
-                    className="mono"
-                    style={{ flex: "none", minWidth: 26, height: 24, padding: "0 6px", borderRadius: 6, border: "1px solid var(--hairline)", background: "var(--bg)", fontSize: 12, color: "var(--text-2)" }}
-                  >
-                    {it.unit === "pct" ? "%" : currencySymbol(currency)}
-                  </button>
-                  <input data-amount-input value={it.amount} onChange={(e) => updateItem(it.id, "amount", e.target.value.replace(/[^0-9.]/g, ""))} onFocus={() => setKeypadOpen(false)} inputMode="decimal" placeholder="0" style={{ width: 68, textAlign: "right", background: "none", border: "none", outline: "none", fontFamily: "var(--font-money)", fontWeight: 800, fontSize: 15 }} />
+                  <span style={{ fontSize: 12, color: "var(--text-2)" }}>{currencySymbol(currency)}</span>
+                  <input value={it.unit === "pct" ? (itemAmt(it) ? trimNum(itemAmt(it)) : "") : it.amount} onChange={(e) => setItemAmount(it.id, e.target.value.replace(/[^0-9.]/g, ""))} onFocus={() => setKeypadOpen(false)} inputMode="decimal" placeholder="0" style={{ width: 68, textAlign: "right", background: "none", border: "none", outline: "none", fontFamily: "var(--font-money)", fontWeight: 800, fontSize: 15 }} />
                   <button onClick={() => removeItem(it.id)} style={{ width: 24, height: 24, borderRadius: "50%", color: "var(--text-3)", fontSize: 13, flex: "none" }}>✕</button>
                 </div>
                 <div onClick={() => setItemPicker(it.id)} style={{ marginTop: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -785,13 +769,27 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
                     )}
                   </span>
                   <span style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
-                    {itemAmt(it) > 0 && total > 0 && (
-                      <UnitHint>
-                        {it.unit === "pct"
-                          ? `= ${currencySymbol(currency)}${itemAmt(it).toLocaleString("en-US", { maximumFractionDigits: 2 })}`
-                          : `= ${pctOf(itemAmt(it))}%`}
-                      </UnitHint>
-                    )}
+                    {total > 0 && (() => {
+                      // Tap the faint "= 10%" to type a percentage instead of an amount.
+                      // Deliberately styled as the hint it replaced — quiet, not a control.
+                      const v = it.unit === "pct" ? (it.pct ?? "") : (pctOf(itemAmt(it)) ?? "");
+                      return (
+                        <label onClick={(e) => e.stopPropagation()} className="mono" style={{ display: "flex", alignItems: "center", fontSize: 11, color: "var(--text-3)", whiteSpace: "nowrap", cursor: "text" }}>
+                          ={"\u00a0"}
+                          <input
+                            value={v}
+                            onChange={(e) => setItemPct(it.id, e.target.value.replace(/[^0-9.]/g, ""))}
+                            onFocus={(e) => { setKeypadOpen(false); e.target.select(); }}
+                            inputMode="decimal"
+                            placeholder="0"
+                            aria-label="Percentage of the total"
+                            className="mono"
+                            style={{ width: `${Math.max(1, String(v).length) + 0.5}ch`, padding: 0, textAlign: "right", background: "none", border: "none", outline: "none", fontSize: 11, color: "inherit" }}
+                          />
+                          %
+                        </label>
+                      );
+                    })()}
                     {it.members.size > 0 && <ChainBtn onClick={(e) => { e.stopPropagation(); chainItem(it.id); }} />}
                   </span>
                 </div>
