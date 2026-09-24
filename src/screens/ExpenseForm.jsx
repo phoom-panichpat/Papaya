@@ -746,8 +746,9 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
                   <span className="money" style={{ fontSize: 15 }}>{restAmount.toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>
                 </span>
               </div>
-              <div onClick={() => setItemPicker("rest")} style={{ marginTop: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              {/* only the left half of this row opens the picker, not the whole card */}
+              <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <span onClick={() => setItemPicker("rest")} style={{ flex: "0 1 55%", minWidth: 0, minHeight: 32, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
                   <Cluster ids={[...restMembers]} people={localPeople} />
                   <span className="legend">{restMembers.size} in</span>
                 </span>
@@ -767,8 +768,8 @@ export default function ExpenseForm({ people, onClose, forceRecordingId = null, 
                   <input value={it.unit === "pct" ? (itemAmt(it) ? trimNum(itemAmt(it)) : "") : it.amount} onChange={(e) => setItemAmount(it.id, e.target.value.replace(/[^0-9.]/g, ""))} onFocus={(e) => { setKeypadOpen(false); caretToEnd(e); }} onClick={caretToEnd} inputMode="decimal" placeholder="0" style={{ width: 68, textAlign: "right", background: "none", border: "none", outline: "none", fontFamily: "var(--font-money)", fontWeight: 800, fontSize: 15 }} />
                   <button onClick={() => removeItem(it.id)} style={{ width: 24, height: 24, borderRadius: "50%", color: "var(--text-3)", fontSize: 13, flex: "none" }}>✕</button>
                 </div>
-                <div onClick={() => setItemPicker(it.id)} style={{ marginTop: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <span onClick={() => setItemPicker(it.id)} style={{ flex: "0 1 55%", minWidth: 0, minHeight: 32, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
                     {it.members.size ? (
                       <>
                         <Cluster ids={[...it.members]} people={localPeople} />
